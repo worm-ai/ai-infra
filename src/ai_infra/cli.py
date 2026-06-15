@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import WorkflowValidationError, load_workflow, validate_workflow
-from .runtime import default_store, get_run, run_workflow, validate_run
+from .runtime import default_store, get_run, run_workflow, validate_run, validate_stored_run
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -30,7 +30,7 @@ def main(argv: list[str] | None = None) -> int:
 
     verify_parser = subparsers.add_parser("verify")
     verify_parser.add_argument("run_id")
-    verify_parser.add_argument("--workflow", required=True)
+    verify_parser.add_argument("--workflow")
 
     args = parser.parse_args(argv)
     store = default_store(args.state_dir)
@@ -56,8 +56,11 @@ def main(argv: list[str] | None = None) -> int:
             _print({"ok": True, "events": [asdict(event) for event in run.events]})
             return 0
         if args.command == "verify":
-            workflow = load_workflow(args.workflow)
-            verification = validate_run(args.run_id, workflow, store=store)
+            if args.workflow:
+                workflow = load_workflow(args.workflow)
+                verification = validate_run(args.run_id, workflow, store=store)
+            else:
+                verification = validate_stored_run(args.run_id, store=store)
             _print({"ok": verification.status == "passed", "verification": asdict(verification)})
             return 0 if verification.status == "passed" else 1
     except (WorkflowValidationError, KeyError, RuntimeError, json.JSONDecodeError) as exc:

@@ -38,6 +38,7 @@ class StoredRun:
     status: str
     inputs: dict[str, Any]
     outputs: dict[str, Any]
+    workflow_source_path: str | None = None
     events: list[NodeEvent] = field(default_factory=list)
     verifications: list[StoredVerification] = field(default_factory=list)
 
@@ -62,7 +63,8 @@ class RunStore:
                     workflow_id text not null,
                     status text not null,
                     inputs_json text not null,
-                    outputs_json text not null
+                    outputs_json text not null,
+                    workflow_source_path text
                 );
                 create table if not exists node_events (
                     id integer primary key autoincrement,
@@ -80,13 +82,26 @@ class RunStore:
                 );
                 """
             )
+            columns = {
+                row["name"]
+                for row in connection.execute("pragma table_info(runs)").fetchall()
+            }
+            if "workflow_source_path" not in columns:
+                connection.execute("alter table runs add column workflow_source_path text")
 
     def save_run(self, run: StoredRun) -> None:
         with self._connect() as connection:
             connection.execute(
                 """
-                insert or replace into runs (run_id, workflow_id, status, inputs_json, outputs_json)
-                values (?, ?, ?, ?, ?)
+                insert or replace into runs (
+                    run_id,
+                    workflow_id,
+                    status,
+                    inputs_json,
+                    outputs_json,
+                    workflow_source_path
+                )
+                values (?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run.run_id,
@@ -94,6 +109,7 @@ class RunStore:
                     run.status,
                     json.dumps(run.inputs, ensure_ascii=False),
                     json.dumps(run.outputs, ensure_ascii=False),
+                    run.workflow_source_path,
                 ),
             )
 
@@ -175,6 +191,7 @@ class RunStore:
             status=run_row["status"],
             inputs=json.loads(run_row["inputs_json"]),
             outputs=json.loads(run_row["outputs_json"]),
+            workflow_source_path=run_row["workflow_source_path"],
             events=events,
             verifications=verifications,
         )

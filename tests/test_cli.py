@@ -38,6 +38,6 @@ def test_cli_validate_run_status_logs_and_verify(tmp_path):
     assert logs.returncode == 0
     assert [event["node_id"] for event in json.loads(logs.stdout)["events"]] == ["draft", "review"]
 
-    verify = run_cli("verify", run_id, "--workflow", "examples/hello_workflow.yaml", state_dir=tmp_path)
+    verify = run_cli("verify", run_id, state_dir=tmp_path)
     assert verify.returncode == 0
     assert json.loads(verify.stdout)["verification"]["status"] == "passed"

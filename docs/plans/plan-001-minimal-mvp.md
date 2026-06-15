@@ -3,12 +3,12 @@
 ## Metadata
 
 - ID: plan-001-minimal-mvp
-- Status: running
+- Status: closed
 - Attractor: attractor-industrial-agent-orchestration
 - Baseline: Repository has active industrial Agent orchestration attractor, owner docs, and seed architecture essay; no executable Python package exists yet.
 - Owner: engineering
 - Created: 2026-06-15T05:59:38.677128+00:00
-- Updated: 2026-06-15T06:31:15.544983+00:00
+- Updated: 2026-06-15T07:00:54.139263+00:00
 
 ## Goals
 
@@ -65,12 +65,15 @@
 - Passing CLI validate and run output.
 - ABH doctor passes after implementation.
 - Independent audit confirms MVP satisfies active attractor and plan exit criteria.
+- audit-001-minimal-mvp
 
 ## Verification Runs
 
 - ver-f4985a46389a
 - ver-af4fb5b7c058
 - ver-a85ff2a96c67
+- ver-f36c72951fff
+- ver-4ea804db2dc7
 
 ## Audits
 

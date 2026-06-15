@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .config import Workflow, validate_workflow
+from .config import Workflow, load_workflow, validate_workflow
 from .langgraph_runner import compile_workflow
 from .store import NodeEvent, RunStore, StoredRun, VerificationCheck, StoredVerification
 
@@ -34,6 +34,7 @@ def run_workflow(workflow: Workflow, inputs: dict[str, Any], store: RunStore | N
     validate_workflow(workflow)
     run_store = store or default_store()
     run_id = f"run-{uuid.uuid4().hex[:12]}"
+    workflow_source_path = str(workflow.source_path) if workflow.source_path else None
 
     run_store.save_run(
         StoredRun(
@@ -42,6 +43,7 @@ def run_workflow(workflow: Workflow, inputs: dict[str, Any], store: RunStore | N
             status="running",
             inputs=inputs,
             outputs={},
+            workflow_source_path=workflow_source_path,
         )
     )
 
@@ -67,6 +69,7 @@ def run_workflow(workflow: Workflow, inputs: dict[str, Any], store: RunStore | N
             status=status,
             inputs=inputs,
             outputs=outputs,
+            workflow_source_path=workflow_source_path,
         )
     )
     return RunResult(run_id=run_id, workflow_id=workflow.id, status=status, outputs=outputs, events=events)
@@ -86,6 +89,20 @@ def validate_run(run_id: str, workflow: Workflow, store: RunStore | None = None)
     status = "passed" if all(check.status == "passed" for check in checks) else "failed"
     run_store.add_verification(run_id, status, checks)
     return VerificationResult(run_id=run_id, status=status, checks=checks)
+
+
+def validate_stored_run(run_id: str, store: RunStore | None = None) -> VerificationResult:
+    run_store = store or default_store()
+    stored = run_store.get_run(run_id)
+    if not stored.workflow_source_path:
+        raise RuntimeError(f"run {run_id!r} does not include a workflow source path")
+    workflow = load_workflow(stored.workflow_source_path)
+    if workflow.id != stored.workflow_id:
+        raise RuntimeError(
+            f"stored run references workflow {stored.workflow_id!r}, "
+            f"but source path contains workflow {workflow.id!r}"
+        )
+    return validate_run(run_id, workflow, store=run_store)
 
 
 def _evaluate_validation(validation_type: str, config: dict[str, Any], run: StoredRun) -> VerificationCheck:
