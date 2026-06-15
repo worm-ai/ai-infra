@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import WorkflowValidationError, load_workflow, validate_workflow
+from .reporting import build_run_report
 from .runtime import default_store, get_run, run_workflow, validate_run, validate_stored_run
 
 
@@ -27,6 +28,9 @@ def main(argv: list[str] | None = None) -> int:
 
     logs_parser = subparsers.add_parser("logs")
     logs_parser.add_argument("run_id")
+
+    report_parser = subparsers.add_parser("report")
+    report_parser.add_argument("run_id")
 
     verify_parser = subparsers.add_parser("verify")
     verify_parser.add_argument("run_id")
@@ -54,6 +58,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "logs":
             run = get_run(args.run_id, store=store)
             _print({"ok": True, "events": [asdict(event) for event in run.events]})
+            return 0
+        if args.command == "report":
+            report = build_run_report(args.run_id, store=store)
+            _print({"ok": True, "report": report})
             return 0
         if args.command == "verify":
             if args.workflow:

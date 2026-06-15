@@ -38,6 +38,35 @@ def test_cli_validate_run_status_logs_and_verify(tmp_path):
     assert logs.returncode == 0
     assert [event["node_id"] for event in json.loads(logs.stdout)["events"]] == ["draft", "review"]
 
+    report = run_cli("report", run_id, state_dir=tmp_path)
+    assert report.returncode == 0
+    report_payload = json.loads(report.stdout)
+    assert report_payload["ok"] is True
+    assert report_payload["report"]["run_id"] == run_id
+    assert report_payload["report"]["summary"] == {"completed": 2, "failed": 0, "total_nodes": 2}
+
     verify = run_cli("verify", run_id, state_dir=tmp_path)
     assert verify.returncode == 0
     assert json.loads(verify.stdout)["verification"]["status"] == "passed"
+
+
+def test_cli_report_summarizes_failed_tool_run(tmp_path):
+    run = run_cli(
+        "run",
+        "examples/tool_failure_workflow.yaml",
+        "--input-file",
+        "examples/tool_input.json",
+        state_dir=tmp_path,
+    )
+    assert run.returncode == 0
+    run_id = json.loads(run.stdout)["run"]["run_id"]
+
+    report = run_cli("report", run_id, state_dir=tmp_path)
+
+    assert report.returncode == 0
+    payload = json.loads(report.stdout)
+    assert payload["ok"] is True
+    assert payload["report"]["status"] == "failed"
+    assert payload["report"]["failure"]["node_id"] == "failing_shell"
+    assert "exit code 7" in payload["report"]["failure"]["message"]
+    assert payload["report"]["timeline"][0]["tool"]["exit_code"] == 7

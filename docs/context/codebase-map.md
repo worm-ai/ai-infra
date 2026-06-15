@@ -11,6 +11,7 @@
 - `pyproject.toml` defines the Python package, `ai-infra` CLI entrypoint, runtime dependencies, and test dependencies.
 - `src/ai_infra/config.py` loads and validates YAML workflow definitions.
 - `src/ai_infra/langgraph_runner.py` compiles workflow definitions into a LangGraph-backed DAG runner.
+- `src/ai_infra/reporting.py` builds structured run reports from persisted SQLite run and node event evidence.
 - `src/ai_infra/runtime.py` exposes SDK runtime functions for executing, inspecting, and verifying runs.
 - `src/ai_infra/store.py` persists runs, node events, and verification evidence in SQLite.
 - `src/ai_infra/cli.py` adapts the shared SDK/runtime to the local CLI.
