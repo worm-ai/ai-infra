@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from .runtime import default_store
-from .store import NodeEvent, RunStore
+from .store import NodeEvent, RunProvenance, RunStore
 
 
 def build_run_report(run_id: str, store: RunStore | None = None) -> dict[str, Any]:
@@ -16,6 +16,7 @@ def build_run_report(run_id: str, store: RunStore | None = None) -> dict[str, An
         "workflow_id": run.workflow_id,
         "status": run.status,
         "inputs": run.inputs,
+        "provenance": _provenance_report(run.provenance),
         "input_summary": _value_summary(run.inputs),
         "outputs": run.outputs,
         "output_summary": _value_summary(run.outputs),
@@ -26,6 +27,20 @@ def build_run_report(run_id: str, store: RunStore | None = None) -> dict[str, An
         },
         "failure": _failure_report(failed_events[0]) if failed_events else None,
         "timeline": timeline,
+    }
+
+
+def _provenance_report(provenance: RunProvenance | None) -> dict[str, Any] | None:
+    if provenance is None:
+        return None
+    return {
+        "workflow_source_path": provenance.workflow_source_path,
+        "workflow_snapshot": provenance.workflow_snapshot,
+        "workflow_sha256": provenance.workflow_sha256,
+        "workflow_snapshot_present": bool(provenance.workflow_snapshot),
+        "inputs_sha256": provenance.inputs_sha256,
+        "git_commit": provenance.git_commit,
+        "environment": provenance.environment,
     }
 
 

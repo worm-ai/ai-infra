@@ -5,9 +5,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .config import Workflow, load_workflow, validate_workflow
+from .config import Workflow, load_workflow_from_source, validate_workflow
 from .langgraph_runner import compile_workflow
-from .store import NodeEvent, RunStore, StoredRun, VerificationCheck, StoredVerification
+from .provenance import build_run_provenance, sha256_text
+from .store import NodeEvent, RunStore, StoredRun, VerificationCheck
 
 
 @dataclass(frozen=True)
@@ -35,6 +36,7 @@ def run_workflow(workflow: Workflow, inputs: dict[str, Any], store: RunStore | N
     run_store = store or default_store()
     run_id = f"run-{uuid.uuid4().hex[:12]}"
     workflow_source_path = str(workflow.source_path) if workflow.source_path else None
+    provenance = build_run_provenance(workflow, inputs)
 
     run_store.save_run(
         StoredRun(
@@ -44,6 +46,7 @@ def run_workflow(workflow: Workflow, inputs: dict[str, Any], store: RunStore | N
             inputs=inputs,
             outputs={},
             workflow_source_path=workflow_source_path,
+            provenance=provenance,
         )
     )
 
@@ -70,6 +73,7 @@ def run_workflow(workflow: Workflow, inputs: dict[str, Any], store: RunStore | N
             inputs=inputs,
             outputs=outputs,
             workflow_source_path=workflow_source_path,
+            provenance=provenance,
         )
     )
     return RunResult(run_id=run_id, workflow_id=workflow.id, status=status, outputs=outputs, events=events)
@@ -82,27 +86,87 @@ def get_run(run_id: str, store: RunStore | None = None) -> StoredRun:
 def validate_run(run_id: str, workflow: Workflow, store: RunStore | None = None) -> VerificationResult:
     run_store = store or default_store()
     stored = run_store.get_run(run_id)
-    checks: list[VerificationCheck] = []
-    for validation in workflow.validations:
-        check = _evaluate_validation(validation.type, validation.config, stored)
-        checks.append(check)
-    status = "passed" if all(check.status == "passed" for check in checks) else "failed"
-    run_store.add_verification(run_id, status, checks)
-    return VerificationResult(run_id=run_id, status=status, checks=checks)
+    checks = _evaluate_workflow_validations(workflow, stored)
+    return _record_verification(run_store, run_id, checks)
 
 
 def validate_stored_run(run_id: str, store: RunStore | None = None) -> VerificationResult:
     run_store = store or default_store()
     stored = run_store.get_run(run_id)
-    if not stored.workflow_source_path:
-        raise RuntimeError(f"run {run_id!r} does not include a workflow source path")
-    workflow = load_workflow(stored.workflow_source_path)
+    if stored.provenance is None:
+        raise RuntimeError(f"run {run_id!r} does not include immutable workflow provenance")
+    workflow = load_workflow_from_source(
+        stored.provenance.workflow_snapshot,
+        source_path=stored.provenance.workflow_source_path,
+    )
     if workflow.id != stored.workflow_id:
         raise RuntimeError(
             f"stored run references workflow {stored.workflow_id!r}, "
-            f"but source path contains workflow {workflow.id!r}"
+            f"but snapshot contains workflow {workflow.id!r}"
         )
-    return validate_run(run_id, workflow, store=run_store)
+    checks = [_evaluate_workflow_source_integrity(stored)]
+    checks.extend(_evaluate_workflow_validations(workflow, stored))
+    return _record_verification(run_store, run_id, checks)
+
+
+def _evaluate_workflow_validations(workflow: Workflow, stored: StoredRun) -> list[VerificationCheck]:
+    return [
+        _evaluate_validation(validation.type, validation.config, stored)
+        for validation in workflow.validations
+    ]
+
+
+def _record_verification(
+    run_store: RunStore,
+    run_id: str,
+    checks: list[VerificationCheck],
+) -> VerificationResult:
+    status = "passed" if all(check.status == "passed" for check in checks) else "failed"
+    run_store.add_verification(run_id, status, checks)
+    return VerificationResult(run_id=run_id, status=status, checks=checks)
+
+
+def _evaluate_workflow_source_integrity(run: StoredRun) -> VerificationCheck:
+    provenance = run.provenance
+    if provenance is None:
+        return VerificationCheck(
+            type="workflow_source_integrity",
+            status="failed",
+            message="run does not include immutable workflow provenance",
+        )
+    if not provenance.workflow_source_path:
+        return VerificationCheck(
+            type="workflow_source_integrity",
+            status="passed",
+            message=(
+                "workflow source path is unavailable; "
+                f"validated persisted snapshot sha256 {provenance.workflow_sha256}"
+            ),
+        )
+
+    workflow_source = Path(provenance.workflow_source_path)
+    if not workflow_source.exists():
+        return VerificationCheck(
+            type="workflow_source_integrity",
+            status="failed",
+            message=f"workflow source is unavailable; run snapshot sha256 is {provenance.workflow_sha256}",
+        )
+
+    current_sha256 = sha256_text(workflow_source.read_text(encoding="utf-8"))
+    if current_sha256 == provenance.workflow_sha256:
+        return VerificationCheck(
+            type="workflow_source_integrity",
+            status="passed",
+            message=f"workflow source matches run snapshot sha256 {provenance.workflow_sha256}",
+        )
+    return VerificationCheck(
+        type="workflow_source_integrity",
+        status="failed",
+        message=(
+            "workflow source changed since run: "
+            f"current sha256 {current_sha256}, run snapshot sha256 {provenance.workflow_sha256}"
+        ),
+    )
 
 
 def _evaluate_validation(validation_type: str, config: dict[str, Any], run: StoredRun) -> VerificationCheck:

@@ -24,6 +24,16 @@ class VerificationCheck:
 
 
 @dataclass(frozen=True)
+class RunProvenance:
+    workflow_source_path: str | None
+    workflow_snapshot: str
+    workflow_sha256: str
+    inputs_sha256: str
+    git_commit: str | None
+    environment: dict[str, Any]
+
+
+@dataclass(frozen=True)
 class StoredVerification:
     id: int
     run_id: str
@@ -39,6 +49,7 @@ class StoredRun:
     inputs: dict[str, Any]
     outputs: dict[str, Any]
     workflow_source_path: str | None = None
+    provenance: RunProvenance | None = None
     events: list[NodeEvent] = field(default_factory=list)
     verifications: list[StoredVerification] = field(default_factory=list)
 
@@ -64,7 +75,12 @@ class RunStore:
                     status text not null,
                     inputs_json text not null,
                     outputs_json text not null,
-                    workflow_source_path text
+                    workflow_source_path text,
+                    workflow_snapshot text,
+                    workflow_sha256 text,
+                    inputs_sha256 text,
+                    git_commit text,
+                    environment_json text
                 );
                 create table if not exists node_events (
                     id integer primary key autoincrement,
@@ -88,8 +104,22 @@ class RunStore:
             }
             if "workflow_source_path" not in columns:
                 connection.execute("alter table runs add column workflow_source_path text")
+            if "workflow_snapshot" not in columns:
+                connection.execute("alter table runs add column workflow_snapshot text")
+            if "workflow_sha256" not in columns:
+                connection.execute("alter table runs add column workflow_sha256 text")
+            if "inputs_sha256" not in columns:
+                connection.execute("alter table runs add column inputs_sha256 text")
+            if "git_commit" not in columns:
+                connection.execute("alter table runs add column git_commit text")
+            if "environment_json" not in columns:
+                connection.execute("alter table runs add column environment_json text")
 
     def save_run(self, run: StoredRun) -> None:
+        provenance = run.provenance
+        workflow_source_path = (
+            provenance.workflow_source_path if provenance is not None else run.workflow_source_path
+        )
         with self._connect() as connection:
             connection.execute(
                 """
@@ -99,9 +129,14 @@ class RunStore:
                     status,
                     inputs_json,
                     outputs_json,
-                    workflow_source_path
+                    workflow_source_path,
+                    workflow_snapshot,
+                    workflow_sha256,
+                    inputs_sha256,
+                    git_commit,
+                    environment_json
                 )
-                values (?, ?, ?, ?, ?, ?)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run.run_id,
@@ -109,7 +144,14 @@ class RunStore:
                     run.status,
                     json.dumps(run.inputs, ensure_ascii=False),
                     json.dumps(run.outputs, ensure_ascii=False),
-                    run.workflow_source_path,
+                    workflow_source_path,
+                    provenance.workflow_snapshot if provenance is not None else None,
+                    provenance.workflow_sha256 if provenance is not None else None,
+                    provenance.inputs_sha256 if provenance is not None else None,
+                    provenance.git_commit if provenance is not None else None,
+                    json.dumps(provenance.environment, ensure_ascii=False)
+                    if provenance is not None
+                    else None,
                 ),
             )
 
@@ -185,6 +227,7 @@ class RunStore:
             )
             for row in verification_rows
         ]
+        provenance = _run_provenance_from_row(run_row)
         return StoredRun(
             run_id=run_row["run_id"],
             workflow_id=run_row["workflow_id"],
@@ -192,6 +235,24 @@ class RunStore:
             inputs=json.loads(run_row["inputs_json"]),
             outputs=json.loads(run_row["outputs_json"]),
             workflow_source_path=run_row["workflow_source_path"],
+            provenance=provenance,
             events=events,
             verifications=verifications,
         )
+
+
+def _run_provenance_from_row(row: sqlite3.Row) -> RunProvenance | None:
+    workflow_snapshot = row["workflow_snapshot"]
+    workflow_sha256 = row["workflow_sha256"]
+    inputs_sha256 = row["inputs_sha256"]
+    if not workflow_snapshot or not workflow_sha256 or not inputs_sha256:
+        return None
+    environment_json = row["environment_json"]
+    return RunProvenance(
+        workflow_source_path=row["workflow_source_path"],
+        workflow_snapshot=workflow_snapshot,
+        workflow_sha256=workflow_sha256,
+        inputs_sha256=inputs_sha256,
+        git_commit=row["git_commit"],
+        environment=json.loads(environment_json) if environment_json else {},
+    )

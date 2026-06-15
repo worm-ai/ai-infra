@@ -52,6 +52,7 @@ class Workflow:
     edges: list[WorkflowEdge]
     validations: list[WorkflowValidation]
     source_path: Path | None = None
+    source_snapshot: str | None = None
 
     @property
     def node_map(self) -> dict[str, WorkflowNode]:
@@ -60,13 +61,18 @@ class Workflow:
 
 def load_workflow(path: str | Path) -> Workflow:
     source_path = Path(path)
-    raw = _load_yaml_mapping(source_path)
+    return load_workflow_from_source(source_path.read_text(encoding="utf-8"), source_path=source_path)
+
+
+def load_workflow_from_source(source: str, source_path: str | Path | None = None) -> Workflow:
+    raw = _load_yaml_mapping(source)
     _reject_unknown_fields(raw, TOP_LEVEL_FIELDS, "top-level")
 
     nodes = _load_nodes(raw.get("nodes"))
     edges = _load_edges(raw.get("edges"))
     validations = _load_validations(raw.get("validations"))
     workflow_id = _optional_string(raw, "id", default="")
+    resolved_source_path = Path(source_path) if source_path is not None else None
     return Workflow(
         id=workflow_id,
         name=_optional_string(raw, "name", default=workflow_id),
@@ -75,7 +81,8 @@ def load_workflow(path: str | Path) -> Workflow:
         nodes=nodes,
         edges=edges,
         validations=validations,
-        source_path=source_path,
+        source_path=resolved_source_path,
+        source_snapshot=source,
     )
 
 
@@ -118,9 +125,9 @@ def validate_workflow(workflow: Workflow) -> None:
     _validate_acyclic(workflow)
 
 
-def _load_yaml_mapping(source_path: Path) -> dict[str, Any]:
+def _load_yaml_mapping(source: str) -> dict[str, Any]:
     try:
-        raw = yaml.safe_load(source_path.read_text(encoding="utf-8"))
+        raw = yaml.safe_load(source)
     except yaml.YAMLError as exc:
         raise WorkflowValidationError(f"workflow YAML is invalid: {exc}") from exc
     if raw is None:

@@ -1,4 +1,4 @@
-from .config import Workflow, WorkflowValidationError, load_workflow, validate_workflow
+from .config import Workflow, WorkflowValidationError, load_workflow, load_workflow_from_source, validate_workflow
 from .layers import DagWorkflow, PlanExecAgent, ReActAgent, SuperAgent
 from .reporting import build_run_report
 from .runtime import RunResult, VerificationResult, get_run, run_workflow, validate_run, validate_stored_run
@@ -20,6 +20,7 @@ __all__ = [
     "execute_tool",
     "get_run",
     "load_workflow",
+    "load_workflow_from_source",
     "run_workflow",
     "validate_run",
     "validate_stored_run",

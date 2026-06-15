@@ -6,7 +6,9 @@ from ai_infra.store import RunStore
 
 def test_build_run_report_summarizes_successful_tool_run(tmp_path):
     store = RunStore(tmp_path / "runs.sqlite")
-    workflow = load_workflow(Path("examples/tool_workflow.yaml"))
+    workflow_path = Path("examples/tool_workflow.yaml")
+    workflow_source = workflow_path.read_text(encoding="utf-8")
+    workflow = load_workflow(workflow_path)
     result = run_workflow(workflow, {"topic": "ABH"}, store=store)
 
     report = build_run_report(result.run_id, store=store)
@@ -15,6 +17,12 @@ def test_build_run_report_summarizes_successful_tool_run(tmp_path):
     assert report["workflow_id"] == "tool-workflow"
     assert report["status"] == "completed"
     assert report["inputs"] == {"topic": "ABH"}
+    assert report["provenance"]["workflow_source_path"] == str(workflow_path)
+    assert report["provenance"]["workflow_snapshot"] == workflow_source
+    assert report["provenance"]["workflow_sha256"]
+    assert report["provenance"]["inputs_sha256"]
+    assert report["provenance"]["git_commit"] is None or len(report["provenance"]["git_commit"]) >= 7
+    assert "python_version" in report["provenance"]["environment"]
     assert report["input_summary"] == {"type": "object", "keys": ["topic"]}
     assert report["outputs"]["python_echo"]["result"] == "ABH"
     assert report["output_summary"] == {
@@ -31,6 +39,44 @@ def test_build_run_report_summarizes_successful_tool_run(tmp_path):
     assert report["timeline"][0]["tool"]["adapter"] == "python"
     assert report["timeline"][1]["tool"]["exit_code"] == 0
     assert report["timeline"][2]["tool"]["status_code"] == 200
+
+
+def test_build_run_report_includes_snapshot_after_workflow_source_mutates(tmp_path):
+    workflow_path = tmp_path / "report_drift_workflow.yaml"
+    original_source = """
+id: report-drift-workflow
+entrypoint: draft
+nodes:
+  draft:
+    type: template
+    template: "Original {topic}"
+validations:
+  - type: run_status
+    equals: completed
+""".strip()
+    workflow_path.write_text(original_source, encoding="utf-8")
+    store = RunStore(tmp_path / "runs.sqlite")
+    workflow = load_workflow(workflow_path)
+    result = run_workflow(workflow, {"topic": "ABH"}, store=store)
+    workflow_path.write_text(
+        """
+id: report-drift-workflow
+entrypoint: draft
+nodes:
+  draft:
+    type: template
+    template: "Changed {topic}"
+validations:
+  - type: run_status
+    equals: failed
+""".strip(),
+        encoding="utf-8",
+    )
+
+    report = build_run_report(result.run_id, store=store)
+
+    assert report["provenance"]["workflow_snapshot"] == original_source
+    assert report["provenance"]["workflow_snapshot_present"] is True
 
 
 def test_build_run_report_identifies_failed_tool_evidence(tmp_path):

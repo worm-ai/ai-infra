@@ -1,12 +1,32 @@
+import hashlib
+import json
 from pathlib import Path
 
-from ai_infra import get_run, load_workflow, run_workflow, validate_run
+from ai_infra import (
+    get_run,
+    load_workflow,
+    load_workflow_from_source,
+    run_workflow,
+    validate_run,
+    validate_stored_run,
+)
+from ai_infra.config import Workflow, WorkflowNode, WorkflowValidation
 from ai_infra.store import RunStore
+
+
+def _sha256_text(value):
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _canonical_json(value):
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def test_run_workflow_persists_completed_run_and_node_events(tmp_path):
     store = RunStore(tmp_path / "runs.sqlite")
-    workflow = load_workflow(Path("examples/hello_workflow.yaml"))
+    workflow_path = Path("examples/hello_workflow.yaml")
+    workflow_source = workflow_path.read_text(encoding="utf-8")
+    workflow = load_workflow(workflow_path)
 
     result = run_workflow(workflow, {"topic": "ABH"}, store=store)
 
@@ -18,6 +38,12 @@ def test_run_workflow_persists_completed_run_and_node_events(tmp_path):
     assert saved.run_id == result.run_id
     assert saved.status == "completed"
     assert [event.node_id for event in saved.events] == ["draft", "review"]
+    assert saved.provenance is not None
+    assert saved.provenance.workflow_source_path == str(workflow_path)
+    assert saved.provenance.workflow_snapshot == workflow_source
+    assert saved.provenance.workflow_sha256 == _sha256_text(workflow_source)
+    assert saved.provenance.inputs_sha256 == _sha256_text(_canonical_json({"topic": "ABH"}))
+    assert "python_version" in saved.provenance.environment
 
 
 def test_validate_run_records_validation_results(tmp_path):
@@ -69,3 +95,166 @@ edges:
     assert result.outputs["right"] == "Right sees Start ABH"
     saved = get_run(result.run_id, store=store)
     assert {event.node_id for event in saved.events} == {"start", "left", "right"}
+
+
+def test_provenance_snapshot_matches_loaded_workflow_when_source_changes_before_run(tmp_path):
+    workflow_path = tmp_path / "loaded_then_changed.yaml"
+    original_source = """
+id: loaded-then-changed
+name: Loaded Then Changed
+version: "0.1"
+entrypoint: draft
+nodes:
+  draft:
+    type: template
+    template: "Original {topic}"
+validations:
+  - type: run_status
+    equals: completed
+  - type: node_completed
+    node: draft
+""".strip()
+    workflow_path.write_text(original_source, encoding="utf-8")
+    workflow = load_workflow(workflow_path)
+    workflow_path.write_text(
+        """
+id: loaded-then-changed
+name: Loaded Then Changed
+version: "0.1"
+entrypoint: draft
+nodes:
+  draft:
+    type: template
+    template: "Changed {topic}"
+validations:
+  - type: run_status
+    equals: completed
+""".strip(),
+        encoding="utf-8",
+    )
+    store = RunStore(tmp_path / "runs.sqlite")
+
+    result = run_workflow(workflow, {"topic": "ABH"}, store=store)
+
+    assert result.outputs["draft"] == "Original ABH"
+    saved = get_run(result.run_id, store=store)
+    assert saved.provenance is not None
+    assert saved.provenance.workflow_snapshot == original_source
+    assert saved.provenance.workflow_sha256 == _sha256_text(original_source)
+
+
+def test_source_only_workflow_persists_snapshot_and_verifies_from_snapshot(tmp_path):
+    source = """
+id: source-only
+name: Source Only
+version: "0.1"
+entrypoint: draft
+nodes:
+  draft:
+    type: template
+    template: "Source {topic}"
+validations:
+  - type: run_status
+    equals: completed
+  - type: node_completed
+    node: draft
+""".strip()
+    store = RunStore(tmp_path / "runs.sqlite")
+    workflow = load_workflow_from_source(source)
+
+    result = run_workflow(workflow, {"topic": "ABH"}, store=store)
+    verification = validate_stored_run(result.run_id, store=store)
+
+    saved = get_run(result.run_id, store=store)
+    assert saved.provenance is not None
+    assert saved.provenance.workflow_source_path is None
+    assert saved.provenance.workflow_snapshot == source
+    assert saved.provenance.workflow_sha256 == _sha256_text(source)
+    assert verification.status == "passed"
+    assert verification.checks[0].type == "workflow_source_integrity"
+    assert verification.checks[0].status == "passed"
+
+
+def test_constructed_workflow_without_source_snapshot_still_has_reloadable_provenance(tmp_path):
+    store = RunStore(tmp_path / "runs.sqlite")
+    workflow = Workflow(
+        id="constructed",
+        name="Constructed",
+        version="0.1",
+        entrypoint="draft",
+        nodes=[
+            WorkflowNode(
+                id="draft",
+                type="template",
+                template="Constructed {topic}",
+            )
+        ],
+        edges=[],
+        validations=[
+            WorkflowValidation(type="run_status", config={"equals": "completed"}),
+            WorkflowValidation(type="node_completed", config={"node": "draft"}),
+        ],
+    )
+
+    result = run_workflow(workflow, {"topic": "ABH"}, store=store)
+    verification = validate_stored_run(result.run_id, store=store)
+
+    saved = get_run(result.run_id, store=store)
+    assert saved.provenance is not None
+    assert saved.provenance.workflow_source_path is None
+    assert '"constructed"' in saved.provenance.workflow_snapshot
+    assert verification.status == "passed"
+
+
+def test_validate_stored_run_detects_workflow_source_drift_but_uses_snapshot(tmp_path):
+    workflow_path = tmp_path / "drift_workflow.yaml"
+    workflow_path.write_text(
+        """
+id: drift-workflow
+name: Drift Workflow
+version: "0.1"
+entrypoint: draft
+nodes:
+  draft:
+    type: template
+    template: "Draft {topic}"
+validations:
+  - type: run_status
+    equals: completed
+  - type: node_completed
+    node: draft
+""".strip(),
+        encoding="utf-8",
+    )
+    store = RunStore(tmp_path / "runs.sqlite")
+    workflow = load_workflow(workflow_path)
+    result = run_workflow(workflow, {"topic": "ABH"}, store=store)
+
+    workflow_path.write_text(
+        """
+id: changed-workflow
+name: Changed Workflow
+version: "0.1"
+entrypoint: other
+nodes:
+  other:
+    type: template
+    template: "Changed {topic}"
+validations:
+  - type: run_status
+    equals: failed
+""".strip(),
+        encoding="utf-8",
+    )
+
+    verification = validate_stored_run(result.run_id, store=store)
+
+    assert verification.status == "failed"
+    checks = {check.type: check for check in verification.checks}
+    assert checks["workflow_source_integrity"].status == "failed"
+    assert "changed since run" in checks["workflow_source_integrity"].message
+    assert checks["run_status"].status == "passed"
+    assert checks["node_completed"].status == "passed"
+
+    saved = get_run(result.run_id, store=store)
+    assert saved.verifications[-1].checks[0].type == "workflow_source_integrity"
