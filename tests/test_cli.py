@@ -70,3 +70,28 @@ def test_cli_report_summarizes_failed_tool_run(tmp_path):
     assert payload["report"]["failure"]["node_id"] == "failing_shell"
     assert "exit code 7" in payload["report"]["failure"]["message"]
     assert payload["report"]["timeline"][0]["tool"]["exit_code"] == 7
+
+
+def test_cli_validate_reports_schema_contract_error(tmp_path):
+    workflow_path = tmp_path / "invalid_workflow.yaml"
+    workflow_path.write_text(
+        """
+id: invalid-cli
+entrypoint: tool_node
+nodes:
+  tool_node:
+    type: tool
+    tool:
+      adapter: shell
+      command: "   "
+""".strip(),
+        encoding="utf-8",
+    )
+
+    validate = run_cli("validate", str(workflow_path), state_dir=tmp_path)
+
+    assert validate.returncode == 2
+    payload = json.loads(validate.stdout)
+    assert payload["ok"] is False
+    assert payload["error"] == "shell tool node 'tool_node' requires non-empty command"
+    assert validate.stderr == ""
