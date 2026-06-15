@@ -32,3 +32,30 @@ nodes:
 
     with pytest.raises(WorkflowValidationError, match="entrypoint"):
         validate_workflow(workflow)
+
+
+def test_validate_rejects_cycle_in_dag_edges(tmp_path):
+    workflow_path = tmp_path / "cycle.yaml"
+    workflow_path.write_text(
+        """
+id: cycle
+entrypoint: first
+nodes:
+  first:
+    type: template
+    template: "first"
+  second:
+    type: template
+    template: "second"
+edges:
+  - from: first
+    to: second
+  - from: second
+    to: first
+""".strip(),
+        encoding="utf-8",
+    )
+    workflow = load_workflow(workflow_path)
+
+    with pytest.raises(WorkflowValidationError, match="cycle"):
+        validate_workflow(workflow)

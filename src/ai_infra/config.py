@@ -109,3 +109,35 @@ def validate_workflow(workflow: Workflow) -> None:
             raise WorkflowValidationError(f"edge source {edge.source!r} is missing")
         if edge.target not in node_ids:
             raise WorkflowValidationError(f"edge target {edge.target!r} is missing")
+
+    _validate_acyclic(workflow)
+
+
+def _validate_acyclic(workflow: Workflow) -> None:
+    successors: dict[str, list[str]] = {node.id: [] for node in workflow.nodes}
+    for node in workflow.nodes:
+        if node.next:
+            successors[node.id].append(node.next)
+    for edge in workflow.edges:
+        successors.setdefault(edge.source, []).append(edge.target)
+
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(node_id: str, path: list[str]) -> None:
+        if node_id in visiting:
+            cycle_start = path.index(node_id) if node_id in path else 0
+            cycle_path = " -> ".join([*path[cycle_start:], node_id])
+            raise WorkflowValidationError(f"workflow cycle detected: {cycle_path}")
+        if node_id in visited:
+            return
+        visiting.add(node_id)
+        for target in successors.get(node_id, []):
+            visit(target, [*path, target])
+        visiting.remove(node_id)
+        visited.add(node_id)
+
+    if workflow.entrypoint:
+        visit(workflow.entrypoint, [workflow.entrypoint])
+    for node in workflow.nodes:
+        visit(node.id, [node.id])

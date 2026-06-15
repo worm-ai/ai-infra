@@ -8,7 +8,7 @@
 - Baseline: Repository has active industrial Agent orchestration attractor, owner docs, and seed architecture essay; no executable Python package exists yet.
 - Owner: engineering
 - Created: 2026-06-15T05:59:38.677128+00:00
-- Updated: 2026-06-15T06:27:41.086691+00:00
+- Updated: 2026-06-15T06:31:15.544983+00:00
 
 ## Goals
 
@@ -55,9 +55,9 @@
 
 - abh doctor --json
 - uv run pytest -q
-- uv run python -m ai_infra.cli validate examples/hello_workflow.yaml
-- uv run python -m ai_infra.cli run examples/hello_workflow.yaml --input-file examples/hello_input.json
 - uv run pytest tests/test_cli.py -q
+- uv run ai-infra validate examples/hello_workflow.yaml
+- uv run ai-infra run examples/hello_workflow.yaml --input-file examples/hello_input.json
 
 ## Closure Evidence
 
@@ -70,6 +70,7 @@
 
 - ver-f4985a46389a
 - ver-af4fb5b7c058
+- ver-a85ff2a96c67
 
 ## Audits
 
