@@ -1,0 +1,22 @@
+id: hello-workflow
+name: Hello Workflow
+version: "0.1"
+entrypoint: draft
+nodes:
+  draft:
+    type: template
+    template: "Draft a short note about {topic}."
+    next: review
+  review:
+    type: template
+    template: "Review result: {draft}"
+edges:
+  - from: draft
+    to: review
+validations:
+  - type: run_status
+    equals: completed
+  - type: node_completed
+    node: draft
+  - type: node_completed
+    node: review
