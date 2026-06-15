@@ -8,7 +8,7 @@
 - Baseline: MVP plan-001 is closed with YAML DAG execution, CLI/SDK, LangGraph runner, SQLite run store, verification, and layer skeletons; runner currently executes template nodes only while workflow config already reserves tool/react/llm/validation node types.
 - Owner: engineering
 - Created: 2026-06-15T08:42:13.955585+00:00
-- Updated: 2026-06-15T08:53:58.145687+00:00
+- Updated: 2026-06-15T08:55:57.585352+00:00
 
 ## Goals
 
@@ -70,6 +70,7 @@
 ## Verification Runs
 
 - ver-f4e586838a59
+- ver-42095a944c05
 
 ## Audits
 
