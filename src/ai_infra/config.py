@@ -101,6 +101,12 @@ def validate_workflow(workflow: Workflow) -> None:
             raise WorkflowValidationError(f"node {node.id!r} has unsupported type {node.type!r}")
         if node.type == "template" and not node.template:
             raise WorkflowValidationError(f"template node {node.id!r} requires template")
+        if node.type == "tool":
+            tool_config = node.config.get("tool")
+            if not isinstance(tool_config, dict):
+                raise WorkflowValidationError(f"tool node {node.id!r} requires tool config")
+            if not tool_config.get("adapter"):
+                raise WorkflowValidationError(f"tool node {node.id!r} requires tool adapter")
         if node.next and node.next not in node_ids:
             raise WorkflowValidationError(f"node {node.id!r} next target {node.next!r} is missing")
 

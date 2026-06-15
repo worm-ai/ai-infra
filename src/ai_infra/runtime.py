@@ -122,4 +122,12 @@ def _evaluate_validation(validation_type: str, config: dict[str, Any], run: Stor
             status="passed" if passed else "failed",
             message=f"node {node_id!r} completed" if passed else f"node {node_id!r} did not complete",
         )
+    if validation_type == "node_failed":
+        node_id = config.get("node")
+        passed = any(event.node_id == node_id and event.status == "failed" for event in run.events)
+        return VerificationCheck(
+            type=validation_type,
+            status="passed" if passed else "failed",
+            message=f"node {node_id!r} failed" if passed else f"node {node_id!r} did not fail",
+        )
     return VerificationCheck(type=validation_type, status="failed", message="unsupported validation type")

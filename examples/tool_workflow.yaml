@@ -1,0 +1,41 @@
+id: tool-workflow
+name: Tool Workflow
+version: "0.2"
+entrypoint: python_echo
+nodes:
+  python_echo:
+    type: tool
+    tool:
+      adapter: python
+      name: echo
+      args:
+        value: "{topic}"
+  shell_echo:
+    type: tool
+    tool:
+      adapter: shell
+      command: "python -c \"import sys; print(sys.argv[1])\" {python_echo.result}"
+      timeout_seconds: 5
+  http_echo:
+    type: tool
+    tool:
+      adapter: http
+      method: POST
+      url: "memory://echo"
+      json:
+        topic: "{topic}"
+        shell_stdout: "{shell_echo.stdout}"
+edges:
+  - from: python_echo
+    to: shell_echo
+  - from: shell_echo
+    to: http_echo
+validations:
+  - type: run_status
+    equals: completed
+  - type: node_completed
+    node: python_echo
+  - type: node_completed
+    node: shell_echo
+  - type: node_completed
+    node: http_echo

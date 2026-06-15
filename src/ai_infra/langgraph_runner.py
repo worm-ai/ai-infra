@@ -7,6 +7,7 @@ from langgraph.graph import END, START, StateGraph
 
 from .config import Workflow, WorkflowNode, validate_workflow
 from .store import NodeEvent, RunStore
+from .tools import execute_tool
 
 
 class WorkflowRunState(TypedDict, total=False):
@@ -48,13 +49,13 @@ def _node_executor(node: WorkflowNode, store: RunStore | None):
         inputs = dict(state.get("inputs") or {})
         context = {**inputs, **dict(state.get("context") or {})}
 
-        output = _execute_node(node, context)
+        node_status, output = _execute_node(node, context)
         event_input = {**context, node.id: output}
 
         event = NodeEvent(
             run_id=str(state.get("run_id") or ""),
             node_id=node.id,
-            status="completed",
+            status=node_status,
             input=event_input,
             output=output,
         )
@@ -65,7 +66,7 @@ def _node_executor(node: WorkflowNode, store: RunStore | None):
             "context": {node.id: output},
             "outputs": {node.id: output},
             "events": [event],
-            "status": "completed",
+            "status": node_status,
         }
 
     return execute
@@ -81,12 +82,18 @@ def _merge_status(left: str | None, right: str | None) -> str:
     return right or left or "completed"
 
 
-def _execute_node(node: WorkflowNode, context: dict[str, Any]) -> str:
-    if node.type != "template":
-        raise RuntimeError(f"node {node.id!r} has no executable runner for type {node.type!r}")
-    if node.template is None:
-        raise RuntimeError(f"template node {node.id!r} requires template")
-    return node.template.format(**context)
+def _execute_node(node: WorkflowNode, context: dict[str, Any]) -> tuple[str, Any]:
+    if node.type == "template":
+        if node.template is None:
+            raise RuntimeError(f"template node {node.id!r} requires template")
+        return "completed", node.template.format(**context)
+    if node.type == "tool":
+        tool_config = node.config.get("tool")
+        if not isinstance(tool_config, dict):
+            raise RuntimeError(f"tool node {node.id!r} requires tool config")
+        execution = execute_tool(tool_config, context)
+        return execution.status, execution.output
+    raise RuntimeError(f"node {node.id!r} has no executable runner for type {node.type!r}")
 
 
 def _successors(workflow: Workflow) -> dict[str, list[str]]:

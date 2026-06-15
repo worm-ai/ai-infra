@@ -1,0 +1,16 @@
+id: tool-failure-workflow
+name: Tool Failure Workflow
+version: "0.2"
+entrypoint: failing_shell
+nodes:
+  failing_shell:
+    type: tool
+    tool:
+      adapter: shell
+      command: "python -c \"import sys; print('expected failure'); sys.exit(7)\""
+      timeout_seconds: 5
+validations:
+  - type: run_status
+    equals: failed
+  - type: node_failed
+    node: failing_shell
