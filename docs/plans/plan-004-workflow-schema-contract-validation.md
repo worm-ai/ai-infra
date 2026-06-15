@@ -8,7 +8,7 @@
 - Baseline: Plans 001-003 are closed with YAML DAG execution, CLI/SDK, LangGraph runner, SQLite run store, tool node execution, structured run reports, and ABH verification/audit records. Workflow config validation exists, but the YAML contract is still loose around top-level shape, unknown fields, node/edge data types, adapter-specific tool config, validation config, and actionable error messages.
 - Owner: engineering
 - Created: 2026-06-15T11:16:50.437569+00:00
-- Updated: 2026-06-15T11:32:14.562309+00:00
+- Updated: 2026-06-15T11:34:58.568397+00:00
 
 ## Goals
 
@@ -72,6 +72,7 @@
 ## Verification Runs
 
 - ver-d99e78b05ac2
+- ver-f018a96a8395
 
 ## Audits
 
