@@ -8,7 +8,7 @@
 - Baseline: Plans 001 and 002 are closed with YAML DAG execution, CLI/SDK, LangGraph runner, SQLite run store, tool node execution, raw event logs, and verification. The current CLI can show raw logs but lacks a structured run report that summarizes status, timeline, node evidence, failure reasons, and tool execution details for production auditability.
 - Owner: engineering
 - Created: 2026-06-15T09:17:39.500136+00:00
-- Updated: 2026-06-15T09:32:29.553219+00:00
+- Updated: 2026-06-15T09:37:33.976018+00:00
 
 ## Goals
 
@@ -72,6 +72,7 @@
 
 - ver-6c7e407476a6
 - ver-a4d964f02864
+- ver-fa965fb07b9a
 
 ## Audits
 
