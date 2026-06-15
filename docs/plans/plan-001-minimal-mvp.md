@@ -8,7 +8,7 @@
 - Baseline: Repository has active industrial Agent orchestration attractor, owner docs, and seed architecture essay; no executable Python package exists yet.
 - Owner: engineering
 - Created: 2026-06-15T05:59:38.677128+00:00
-- Updated: 2026-06-15T06:18:26.642472+00:00
+- Updated: 2026-06-15T06:27:41.086691+00:00
 
 ## Goals
 
@@ -68,8 +68,9 @@
 
 ## Verification Runs
 
-- 
+- ver-f4985a46389a
+- ver-af4fb5b7c058
 
 ## Audits
 
-- 
+- audit-001-minimal-mvp
