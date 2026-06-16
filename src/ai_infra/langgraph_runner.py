@@ -61,6 +61,18 @@ def _node_executor(node: WorkflowNode, store: RunStore | None):
 
         for attempt in range(1, policy["max_attempts"] + 1):
             node_status, output = _execute_node(node, context)
+            contract_evidence = _evaluate_output_contract(node, output)
+            contract_error: str | None = None
+            if contract_evidence is not None:
+                contract_failed = contract_evidence["status"] == "failed"
+                if contract_failed:
+                    node_status = "failed"
+                    contract_error = _contract_failure_message(node.id, contract_evidence)
+                if contract_failed:
+                    if not isinstance(output, dict):
+                        output = {"result": output}
+                    output = dict(output)
+                    output["error"] = contract_error
             records_policy = _has_policy(node) or policy["max_attempts"] > 1
             output = _attempt_output(
                 output,
@@ -71,6 +83,11 @@ def _node_executor(node: WorkflowNode, store: RunStore | None):
             )
             final_attempt = attempt == policy["max_attempts"] or node_status == "completed"
             event_output = _event_output(output, attempt, policy, node_status)
+            event_metadata: dict[str, Any] = {}
+            if contract_evidence is not None:
+                event_metadata["contract"] = {"output": contract_evidence}
+            if contract_error is not None:
+                event_output.setdefault("error", contract_error)
             outcome = _policy_outcome(node_status, attempt, policy, final_attempt)
             if records_policy:
                 event_output["policy_outcome"] = outcome
@@ -84,6 +101,7 @@ def _node_executor(node: WorkflowNode, store: RunStore | None):
                 status=node_status,
                 input={**context, node.id: event_output},
                 output=event_output,
+                metadata=event_metadata,
             )
             events.append(event)
             if store is not None and event.run_id:
@@ -199,6 +217,108 @@ def _policy_outcome(
     if policy["on_failure"] == "continue":
         return "continued_after_failure"
     return "retry_exhausted"
+
+
+def _evaluate_output_contract(node: WorkflowNode, output: Any) -> dict[str, Any] | None:
+    contract = node.config.get("contract")
+    if not isinstance(contract, dict):
+        return None
+    output_contract = contract.get("output")
+    if not isinstance(output_contract, dict):
+        return None
+
+    expected_type = str(output_contract.get("type", ""))
+    required_fields = output_contract.get("required_fields", {})
+    if not isinstance(required_fields, dict):
+        required_fields = {}
+
+    missing_fields: list[str] = []
+    type_errors: list[dict[str, str]] = []
+    if not _matches_contract_type(output, expected_type):
+        type_errors.append(
+            {
+                "field": "$",
+                "expected": expected_type,
+                "actual": _contract_type_name(output),
+            }
+        )
+    elif expected_type == "object":
+        for field_name, field_type in required_fields.items():
+            field_key = str(field_name)
+            if not isinstance(output, dict) or field_key not in output:
+                missing_fields.append(field_key)
+                continue
+            actual_value = output[field_key]
+            expected_field_type = str(field_type)
+            if not _matches_contract_type(actual_value, expected_field_type):
+                type_errors.append(
+                    {
+                        "field": field_key,
+                        "expected": expected_field_type,
+                        "actual": _contract_type_name(actual_value),
+                    }
+                )
+
+    status = "failed" if missing_fields or type_errors else "passed"
+    return {
+        "status": status,
+        "type": expected_type,
+        "required_fields": dict(required_fields),
+        "missing_fields": missing_fields,
+        "type_errors": type_errors,
+    }
+
+
+def _contract_failure_message(node_id: str, evidence: dict[str, Any]) -> str:
+    missing_fields = evidence.get("missing_fields")
+    if isinstance(missing_fields, list) and missing_fields:
+        missing = ", ".join(f"missing field {field!r}" for field in missing_fields)
+        return f"output contract failed for node {node_id!r}: {missing}"
+    type_errors = evidence.get("type_errors")
+    if isinstance(type_errors, list) and type_errors:
+        first = type_errors[0]
+        if isinstance(first, dict):
+            return (
+                f"output contract failed for node {node_id!r}: field {first.get('field')!r} "
+                f"expected {first.get('expected')!r}, got {first.get('actual')!r}"
+            )
+    return f"output contract failed for node {node_id!r}"
+
+
+def _matches_contract_type(value: Any, expected_type: str) -> bool:
+    if expected_type == "object":
+        return isinstance(value, dict)
+    if expected_type == "array":
+        return isinstance(value, list)
+    if expected_type == "string":
+        return isinstance(value, str)
+    if expected_type == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if expected_type == "number":
+        return (isinstance(value, int | float)) and not isinstance(value, bool)
+    if expected_type == "boolean":
+        return isinstance(value, bool)
+    if expected_type == "null":
+        return value is None
+    return False
+
+
+def _contract_type_name(value: Any) -> str:
+    if isinstance(value, dict):
+        return "object"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, int):
+        return "integer"
+    if isinstance(value, float):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    if value is None:
+        return "null"
+    return type(value).__name__
 
 
 def _successors(workflow: Workflow) -> dict[str, list[str]]:

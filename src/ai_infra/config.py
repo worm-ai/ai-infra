@@ -12,17 +12,20 @@ class WorkflowValidationError(ValueError):
 
 
 TOP_LEVEL_FIELDS = {"id", "name", "version", "entrypoint", "nodes", "edges", "validations"}
-NODE_FIELDS = {"type", "template", "next", "tool", "config", "policy"}
+NODE_FIELDS = {"type", "template", "next", "tool", "config", "policy", "contract"}
 EDGE_FIELDS = {"from", "to"}
 SUPPORTED_NODE_TYPES = {"template", "react", "tool", "llm", "validation"}
 SUPPORTED_TOOL_ADAPTERS = {"python", "shell", "http"}
 SUPPORTED_HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
+SUPPORTED_CONTRACT_TYPES = {"object", "array", "string", "integer", "number", "boolean", "null"}
+SUPPORTED_CONTRACT_STATUSES = {"passed", "failed"}
 SUPPORTED_VALIDATION_TYPES = {
     "run_status",
     "node_completed",
     "node_failed",
     "node_attempts",
     "node_policy_outcome",
+    "node_contract",
 }
 SUPPORTED_ON_FAILURE = {"halt", "continue"}
 SUPPORTED_POLICY_OUTCOMES = {
@@ -119,6 +122,7 @@ def validate_workflow(workflow: Workflow) -> None:
         if node.type == "tool":
             _validate_tool_node(node)
         _validate_node_policy(node)
+        _validate_node_contract(node)
         if node.next and node.next not in node_ids:
             raise WorkflowValidationError(f"node {node.id!r} next target {node.next!r} is missing")
 
@@ -182,6 +186,8 @@ def _node_config(node_data: dict[str, Any]) -> dict[str, Any]:
         config["tool"] = node_data["tool"]
     if "policy" in node_data:
         config["policy"] = node_data["policy"]
+    if "contract" in node_data:
+        config["contract"] = node_data["contract"]
     if "config" in node_data:
         if not isinstance(node_data["config"], dict):
             raise WorkflowValidationError("node config must be a mapping")
@@ -284,6 +290,48 @@ def _validate_node_policy(node: WorkflowNode) -> None:
         )
 
 
+def _validate_node_contract(node: WorkflowNode) -> None:
+    contract = node.config.get("contract")
+    if contract is None:
+        return
+    if not isinstance(contract, dict):
+        raise WorkflowValidationError(f"node {node.id!r} contract must be a mapping")
+    _reject_unknown_fields(contract, {"output"}, f"node {node.id!r} contract")
+    if "output" not in contract:
+        raise WorkflowValidationError(f"node {node.id!r} contract requires output")
+    output_contract = contract["output"]
+    if not isinstance(output_contract, dict):
+        raise WorkflowValidationError(f"node {node.id!r} output contract must be a mapping")
+    _reject_unknown_fields(output_contract, {"type", "required_fields"}, f"node {node.id!r} output contract")
+    expected_type = output_contract.get("type")
+    if not _is_non_empty_string(expected_type):
+        raise WorkflowValidationError(f"node {node.id!r} output contract requires type")
+    if expected_type not in SUPPORTED_CONTRACT_TYPES:
+        allowed = ", ".join(sorted(SUPPORTED_CONTRACT_TYPES))
+        raise WorkflowValidationError(f"node {node.id!r} output contract type must be one of {allowed}")
+
+    required_fields = output_contract.get("required_fields", {})
+    if required_fields is None:
+        required_fields = {}
+    if required_fields and expected_type != "object":
+        raise WorkflowValidationError(
+            f"node {node.id!r} output contract required_fields requires type object"
+        )
+    if not isinstance(required_fields, dict):
+        raise WorkflowValidationError(f"node {node.id!r} output contract required_fields must be a mapping")
+    for field_name, field_type in required_fields.items():
+        if not _is_non_empty_string(field_name):
+            raise WorkflowValidationError(f"node {node.id!r} output contract field name must be a non-empty string")
+        if not _is_non_empty_string(field_type):
+            raise WorkflowValidationError(
+                f"node {node.id!r} output contract field {field_name!r} requires type"
+            )
+        if field_type not in SUPPORTED_CONTRACT_TYPES:
+            raise WorkflowValidationError(
+                f"node {node.id!r} output contract field {field_name!r} has unsupported type {field_type!r}"
+            )
+
+
 def _validate_timeout(config: dict[str, Any], context: str) -> None:
     if "timeout_seconds" not in config:
         return
@@ -324,6 +372,16 @@ def _validate_run_validation(index: int, validation: WorkflowValidation, node_id
             raise WorkflowValidationError(
                 f"{context} node_policy_outcome has unsupported equals {expected!r}"
             )
+        return
+
+    if validation.type == "node_contract":
+        _reject_unknown_fields(validation.config, {"node", "equals"}, context)
+        _validate_validation_node_reference(context, validation, node_ids)
+        expected = validation.config.get("equals")
+        if not _is_non_empty_string(expected):
+            raise WorkflowValidationError(f"{context} node_contract requires equals")
+        if expected not in SUPPORTED_CONTRACT_STATUSES:
+            raise WorkflowValidationError(f"{context} node_contract has unsupported equals {expected!r}")
         return
 
     _reject_unknown_fields(validation.config, {"node"}, context)

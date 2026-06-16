@@ -19,6 +19,17 @@ def build_run_report(run_id: str, store: RunStore | None = None) -> dict[str, An
         if isinstance(event.output, dict) and int(event.output.get("attempt", 1)) > 1
     ]
 
+    summary: dict[str, Any] = {
+        "completed": sum(1 for node in timeline if node["status"] == "completed"),
+        "failed": len(failed_nodes),
+        "retried": len(retry_events),
+        "total_nodes": len(timeline),
+        "total_events": len(run.events),
+    }
+    contract_summary = _contract_summary(timeline)
+    if contract_summary is not None:
+        summary["contracts"] = contract_summary
+
     return {
         "run_id": run.run_id,
         "workflow_id": run.workflow_id,
@@ -28,13 +39,7 @@ def build_run_report(run_id: str, store: RunStore | None = None) -> dict[str, An
         "input_summary": _value_summary(run.inputs),
         "outputs": run.outputs,
         "output_summary": _value_summary(run.outputs),
-        "summary": {
-            "completed": sum(1 for node in timeline if node["status"] == "completed"),
-            "failed": len(failed_nodes),
-            "retried": len(retry_events),
-            "total_nodes": len(timeline),
-            "total_events": len(run.events),
-        },
+        "summary": summary,
         "failure": _failure_report(failed_nodes[0]) if failed_nodes else None,
         "timeline": timeline,
     }
@@ -79,6 +84,7 @@ def _node_report(index: int, events: list[NodeEvent]) -> dict[str, Any]:
         "output_summary": _value_summary(event.output),
         "output": event.output,
         "tool": _tool_report(event.output),
+        "contract": _contract_report(event),
     }
 
 
@@ -89,6 +95,9 @@ def _failure_report(node: dict[str, Any]) -> dict[str, str]:
     policy_outcome = output.get("policy_outcome")
     if isinstance(policy_outcome, str):
         failure["policy_outcome"] = policy_outcome
+    contract_status = _contract_status(node.get("contract"))
+    if contract_status == "failed":
+        failure["contract_status"] = contract_status
     return failure
 
 
@@ -98,6 +107,7 @@ def _attempt_event_report(event: NodeEvent) -> dict[str, Any]:
         "status": event.status,
         "attempt": output.get("attempt", 1),
         "policy_outcome": output.get("policy_outcome"),
+        "contract_status": _contract_status(event.metadata.get("contract")),
         "duration_ms": _duration_ms(output),
         "error": output.get("error"),
     }
@@ -136,6 +146,42 @@ def _tool_report(output: Any) -> dict[str, Any] | None:
         "duration_ms",
     ]
     return {key: output[key] for key in keys if key in output}
+
+
+def _contract_report(event: NodeEvent) -> dict[str, Any] | None:
+    contract = event.metadata.get("contract")
+    if not isinstance(contract, dict):
+        return None
+    return contract
+
+
+def _contract_summary(timeline: list[dict[str, Any]]) -> dict[str, int] | None:
+    counts = {"passed": 0, "failed": 0, "unchecked": 0}
+    saw_contract = False
+    for node in timeline:
+        contract = node.get("contract")
+        if contract is None:
+            counts["unchecked"] += 1
+            continue
+        status = _contract_status(contract)
+        if status in ("passed", "failed"):
+            counts[status] += 1
+            saw_contract = True
+        else:
+            counts["unchecked"] += 1
+    if not saw_contract:
+        return None
+    return counts
+
+
+def _contract_status(contract: Any) -> str | None:
+    if not isinstance(contract, dict):
+        return None
+    output_contract = contract.get("output")
+    if not isinstance(output_contract, dict):
+        return None
+    status = output_contract.get("status")
+    return status if isinstance(status, str) else None
 
 
 def _value_summary(value: Any) -> dict[str, Any]:

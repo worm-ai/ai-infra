@@ -119,6 +119,108 @@ nodes:
     }
 
 
+def test_load_workflow_accepts_node_output_contract(tmp_path):
+    path = write_workflow(
+        tmp_path,
+        """
+id: output-contract
+entrypoint: python_echo
+nodes:
+  python_echo:
+    type: tool
+    contract:
+      output:
+        type: object
+        required_fields:
+          result: string
+          adapter: string
+    tool:
+      adapter: python
+      name: echo
+      args:
+        value: "{topic}"
+validations:
+  - type: node_contract
+    node: python_echo
+    equals: passed
+""",
+    )
+
+    workflow = load_workflow(path)
+    validate_workflow(workflow)
+
+    assert workflow.node_map["python_echo"].config["contract"] == {
+        "output": {
+            "type": "object",
+            "required_fields": {
+                "result": "string",
+                "adapter": "string",
+            },
+        }
+    }
+
+
+@pytest.mark.parametrize(
+    ("contract", "message"),
+    [
+        (
+            """
+output:
+  type: tuple
+""",
+            "node 'python_echo' output contract type must be one of",
+        ),
+        (
+            """
+input:
+  type: object
+""",
+            "node 'python_echo' contract has unsupported field 'input'",
+        ),
+        (
+            """
+output:
+  type: string
+  required_fields:
+    result: string
+""",
+            "node 'python_echo' output contract required_fields requires type object",
+        ),
+        (
+            """
+output:
+  type: object
+  required_fields:
+    result: datetime
+""",
+            "node 'python_echo' output contract field 'result' has unsupported type 'datetime'",
+        ),
+    ],
+)
+def test_validate_workflow_rejects_invalid_output_contract(tmp_path, contract, message):
+    path = write_workflow(
+        tmp_path,
+        f"""
+id: bad-output-contract
+entrypoint: python_echo
+nodes:
+  python_echo:
+    type: tool
+    contract:
+{_indent(contract, spaces=6)}
+    tool:
+      adapter: python
+      name: echo
+      args:
+        value: "{{topic}}"
+""",
+    )
+    workflow = load_workflow(path)
+
+    with pytest.raises(WorkflowValidationError, match=re.escape(message)):
+        validate_workflow(workflow)
+
+
 @pytest.mark.parametrize(
     ("policy", "message"),
     [
@@ -259,6 +361,14 @@ nodes:
   equals: unknown
 """,
             "validation[0] node_policy_outcome has unsupported equals 'unknown'",
+        ),
+        (
+            """
+- type: node_contract
+  node: only
+  equals: unknown
+""",
+            "validation[0] node_contract has unsupported equals 'unknown'",
         ),
     ],
 )

@@ -215,3 +215,66 @@ def test_cli_retry_exhausted_policy_report_and_verify(tmp_path):
     verify = run_cli("verify", run_id, state_dir=tmp_path)
     assert verify.returncode == 0
     assert json.loads(verify.stdout)["verification"]["status"] == "passed"
+
+
+def test_cli_output_contract_report_and_verify(tmp_path):
+    validate = run_cli("validate", "examples/output_contract_workflow.yaml", state_dir=tmp_path)
+    assert validate.returncode == 0
+
+    run = run_cli(
+        "run",
+        "examples/output_contract_workflow.yaml",
+        "--input-file",
+        "examples/output_contract_input.json",
+        state_dir=tmp_path,
+    )
+    assert run.returncode == 0
+    run_payload = json.loads(run.stdout)
+    run_id = run_payload["run"]["run_id"]
+    assert run_payload["run"]["status"] == "completed"
+
+    report = run_cli("report", run_id, state_dir=tmp_path)
+    assert report.returncode == 0
+    report_payload = json.loads(report.stdout)
+    assert report_payload["report"]["summary"]["contracts"] == {
+        "passed": 1,
+        "failed": 0,
+        "unchecked": 0,
+    }
+    [node] = report_payload["report"]["timeline"]
+    assert node["contract"]["output"]["status"] == "passed"
+
+    verify = run_cli("verify", run_id, state_dir=tmp_path)
+    assert verify.returncode == 0
+    checks = {check["type"]: check for check in json.loads(verify.stdout)["verification"]["checks"]}
+    assert checks["node_contract"]["status"] == "passed"
+
+
+def test_cli_output_contract_failure_report_and_verify(tmp_path):
+    validate = run_cli("validate", "examples/output_contract_failure_workflow.yaml", state_dir=tmp_path)
+    assert validate.returncode == 0
+
+    run = run_cli(
+        "run",
+        "examples/output_contract_failure_workflow.yaml",
+        "--input-file",
+        "examples/output_contract_input.json",
+        state_dir=tmp_path,
+    )
+    assert run.returncode == 0
+    run_id = json.loads(run.stdout)["run"]["run_id"]
+
+    report = run_cli("report", run_id, state_dir=tmp_path)
+    assert report.returncode == 0
+    report_payload = json.loads(report.stdout)
+    assert report_payload["report"]["status"] == "failed"
+    assert report_payload["report"]["summary"]["contracts"] == {
+        "passed": 0,
+        "failed": 1,
+        "unchecked": 0,
+    }
+    assert report_payload["report"]["failure"]["contract_status"] == "failed"
+
+    verify = run_cli("verify", run_id, state_dir=tmp_path)
+    assert verify.returncode == 0
+    assert json.loads(verify.stdout)["verification"]["status"] == "passed"

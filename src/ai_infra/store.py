@@ -14,6 +14,7 @@ class NodeEvent:
     status: str
     input: dict[str, Any]
     output: Any
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -88,7 +89,8 @@ class RunStore:
                     node_id text not null,
                     status text not null,
                     input_json text not null,
-                    output_json text not null
+                    output_json text not null,
+                    metadata_json text
                 );
                 create table if not exists verifications (
                     id integer primary key autoincrement,
@@ -114,6 +116,12 @@ class RunStore:
                 connection.execute("alter table runs add column git_commit text")
             if "environment_json" not in columns:
                 connection.execute("alter table runs add column environment_json text")
+            event_columns = {
+                row["name"]
+                for row in connection.execute("pragma table_info(node_events)").fetchall()
+            }
+            if "metadata_json" not in event_columns:
+                connection.execute("alter table node_events add column metadata_json text")
 
     def save_run(self, run: StoredRun) -> None:
         provenance = run.provenance
@@ -159,8 +167,8 @@ class RunStore:
         with self._connect() as connection:
             connection.execute(
                 """
-                insert into node_events (run_id, node_id, status, input_json, output_json)
-                values (?, ?, ?, ?, ?)
+                insert into node_events (run_id, node_id, status, input_json, output_json, metadata_json)
+                values (?, ?, ?, ?, ?, ?)
                 """,
                 (
                     event.run_id,
@@ -168,6 +176,7 @@ class RunStore:
                     event.status,
                     json.dumps(event.input, ensure_ascii=False),
                     json.dumps(event.output, ensure_ascii=False),
+                    json.dumps(event.metadata, ensure_ascii=False),
                 ),
             )
 
@@ -208,6 +217,7 @@ class RunStore:
                 status=row["status"],
                 input=json.loads(row["input_json"]),
                 output=json.loads(row["output_json"]),
+                metadata=json.loads(row["metadata_json"]) if row["metadata_json"] else {},
             )
             for row in event_rows
         ]

@@ -1,0 +1,26 @@
+id: output-contract-failure-workflow
+name: Output Contract Failure Workflow
+version: "0.1"
+entrypoint: python_echo
+nodes:
+  python_echo:
+    type: tool
+    contract:
+      output:
+        type: object
+        required_fields:
+          missing: string
+          adapter: string
+    tool:
+      adapter: python
+      name: echo
+      args:
+        value: "{topic}"
+validations:
+  - type: run_status
+    equals: failed
+  - type: node_failed
+    node: python_echo
+  - type: node_contract
+    node: python_echo
+    equals: failed

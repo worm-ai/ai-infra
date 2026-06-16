@@ -216,6 +216,17 @@ def _evaluate_validation(validation_type: str, config: dict[str, Any], run: Stor
             status="passed" if passed else "failed",
             message=f"node {node_id!r} policy outcome is {actual!r}, expected {expected!r}",
         )
+    if validation_type == "node_contract":
+        node_id = config.get("node")
+        expected = config.get("equals")
+        attempts = [event for event in run.events if event.node_id == node_id]
+        actual = _latest_contract_status(attempts)
+        passed = actual == expected
+        return VerificationCheck(
+            type=validation_type,
+            status="passed" if passed else "failed",
+            message=f"node {node_id!r} contract status is {actual!r}, expected {expected!r}",
+        )
     return VerificationCheck(type=validation_type, status="failed", message="unsupported validation type")
 
 
@@ -228,3 +239,16 @@ def _latest_policy_outcome(events: list[NodeEvent]) -> str | None:
         if isinstance(outcome, str):
             return outcome
     return None
+
+
+def _latest_contract_status(events: list[NodeEvent]) -> str | None:
+    if not events:
+        return None
+    contract = events[-1].metadata.get("contract")
+    if not isinstance(contract, dict):
+        return None
+    output_contract = contract.get("output")
+    if not isinstance(output_contract, dict):
+        return None
+    status = output_contract.get("status")
+    return status if isinstance(status, str) else None

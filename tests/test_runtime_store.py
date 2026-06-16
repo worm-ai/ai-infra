@@ -11,7 +11,7 @@ from ai_infra import (
     validate_stored_run,
 )
 from ai_infra.config import Workflow, WorkflowNode, WorkflowValidation
-from ai_infra.store import RunStore
+from ai_infra.store import NodeEvent, RunStore, StoredRun
 from ai_infra.tools import default_tool_registry
 
 
@@ -425,4 +425,212 @@ validations:
     saved = get_run(result.run_id, store=store)
     assert [event.node_id for event in saved.events] == ["optional", "optional", "downstream"]
     assert saved.events[-2].output["policy_outcome"] == "continued_after_failure"
+    assert verification.status == "passed"
+
+
+def test_run_workflow_persists_passing_output_contract_evidence(tmp_path):
+    store = RunStore(tmp_path / "runs.sqlite")
+    workflow_path = tmp_path / "output_contract_workflow.yaml"
+    workflow_path.write_text(
+        """
+id: output-contract-workflow
+entrypoint: python_echo
+nodes:
+  python_echo:
+    type: tool
+    contract:
+      output:
+        type: object
+        required_fields:
+          result: string
+          adapter: string
+    tool:
+      adapter: python
+      name: echo
+      args:
+        value: "{topic}"
+validations:
+  - type: run_status
+    equals: completed
+  - type: node_completed
+    node: python_echo
+  - type: node_contract
+    node: python_echo
+    equals: passed
+""".strip(),
+        encoding="utf-8",
+    )
+    workflow = load_workflow(workflow_path)
+
+    result = run_workflow(workflow, {"topic": "ABH"}, store=store)
+    verification = validate_stored_run(result.run_id, store=store)
+
+    assert result.status == "completed"
+    assert result.outputs["python_echo"]["result"] == "ABH"
+    saved = get_run(result.run_id, store=store)
+    [event] = saved.events
+    assert event.status == "completed"
+    assert "contract" not in event.output
+    assert event.metadata["contract"] == {
+        "output": {
+            "status": "passed",
+            "type": "object",
+            "required_fields": {
+                "result": "string",
+                "adapter": "string",
+            },
+            "missing_fields": [],
+            "type_errors": [],
+        }
+    }
+    checks = {check.type: check for check in verification.checks}
+    assert checks["node_contract"].status == "passed"
+    assert "contract status is 'passed'" in checks["node_contract"].message
+
+
+def test_run_workflow_fails_node_when_output_contract_fails(tmp_path):
+    store = RunStore(tmp_path / "runs.sqlite")
+    workflow_path = tmp_path / "output_contract_failure_workflow.yaml"
+    workflow_path.write_text(
+        """
+id: output-contract-failure-workflow
+entrypoint: python_echo
+nodes:
+  python_echo:
+    type: tool
+    contract:
+      output:
+        type: object
+        required_fields:
+          missing: string
+          adapter: string
+    tool:
+      adapter: python
+      name: echo
+      args:
+        value: "{topic}"
+validations:
+  - type: run_status
+    equals: failed
+  - type: node_failed
+    node: python_echo
+  - type: node_contract
+    node: python_echo
+    equals: failed
+""".strip(),
+        encoding="utf-8",
+    )
+    workflow = load_workflow(workflow_path)
+
+    result = run_workflow(workflow, {"topic": "ABH"}, store=store)
+    verification = validate_stored_run(result.run_id, store=store)
+
+    assert result.status == "failed"
+    saved = get_run(result.run_id, store=store)
+    [event] = saved.events
+    assert event.status == "failed"
+    assert "contract" not in event.output
+    assert event.metadata["contract"]["output"]["status"] == "failed"
+    assert event.metadata["contract"]["output"]["missing_fields"] == ["missing"]
+    assert event.output["error"] == "output contract failed for node 'python_echo': missing field 'missing'"
+    checks = {check.type: check for check in verification.checks}
+    assert checks["node_contract"].status == "passed"
+    assert "contract status is 'failed'" in checks["node_contract"].message
+
+
+def test_output_contract_evidence_does_not_overwrite_user_contract_field(tmp_path):
+    store = RunStore(tmp_path / "runs.sqlite")
+    workflow_path = tmp_path / "user_contract_field_workflow.yaml"
+    workflow_path.write_text(
+        """
+id: user-contract-field-workflow
+entrypoint: producer
+nodes:
+  producer:
+    type: tool
+    next: downstream
+    contract:
+      output:
+        type: object
+        required_fields:
+          result: object
+          adapter: string
+    tool:
+      adapter: python
+      name: echo
+      args:
+        value:
+          contract: user-owned-contract
+  downstream:
+    type: template
+    template: "Downstream sees {producer.result.contract}"
+validations:
+  - type: run_status
+    equals: completed
+  - type: node_contract
+    node: producer
+    equals: passed
+""".strip(),
+        encoding="utf-8",
+    )
+    workflow = load_workflow(workflow_path)
+
+    result = run_workflow(workflow, {"topic": "ABH"}, store=store)
+    verification = validate_stored_run(result.run_id, store=store)
+
+    assert result.status == "completed"
+    assert result.outputs["producer"]["result"]["contract"] == "user-owned-contract"
+    assert result.outputs["downstream"] == "Downstream sees user-owned-contract"
+    saved = get_run(result.run_id, store=store)
+    producer_event = saved.events[0]
+    assert producer_event.output["result"]["contract"] == "user-owned-contract"
+    assert producer_event.metadata["contract"]["output"]["status"] == "passed"
+    assert verification.status == "passed"
+
+
+def test_node_contract_validation_uses_event_metadata_not_user_output_contract_field(tmp_path):
+    store = RunStore(tmp_path / "runs.sqlite")
+    store.save_run(
+        StoredRun(
+            run_id="run-user-contract-field",
+            workflow_id="manual-contract-field",
+            status="completed",
+            inputs={},
+            outputs={"producer": {"contract": "user-owned-contract"}},
+        )
+    )
+    store.add_event(
+        NodeEvent(
+            run_id="run-user-contract-field",
+            node_id="producer",
+            status="completed",
+            input={},
+            output={"contract": "user-owned-contract"},
+            metadata={
+                "contract": {
+                    "output": {
+                        "status": "passed",
+                        "type": "object",
+                        "required_fields": {"contract": "string"},
+                        "missing_fields": [],
+                        "type_errors": [],
+                    }
+                }
+            },
+        )
+    )
+    workflow = Workflow(
+        id="manual-contract-field",
+        name="Manual Contract Field",
+        version="0.1",
+        entrypoint="producer",
+        nodes=[WorkflowNode(id="producer", type="template", template="unused")],
+        edges=[],
+        validations=[
+            WorkflowValidation(type="node_contract", config={"node": "producer", "equals": "passed"})
+        ],
+    )
+
+    verification = validate_run("run-user-contract-field", workflow, store=store)
+
     assert verification.status == "passed"

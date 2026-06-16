@@ -54,3 +54,38 @@ edges:
     assert result["outputs"]["left"] == "Left sees Start ABH"
     assert result["outputs"]["right"] == "Right sees Start ABH"
     assert {event.node_id for event in result["events"]} == {"start", "left", "right"}
+
+
+def test_output_contract_evidence_does_not_change_scalar_context_values(tmp_path):
+    workflow_path = tmp_path / "scalar_contract.yaml"
+    workflow_path.write_text(
+        """
+id: scalar-contract
+entrypoint: draft
+nodes:
+  draft:
+    type: template
+    template: "Draft {topic}"
+    contract:
+      output:
+        type: string
+  review:
+    type: template
+    template: "Review {draft}"
+edges:
+  - from: draft
+    to: review
+""".strip(),
+        encoding="utf-8",
+    )
+    workflow = load_workflow(workflow_path)
+    store = RunStore(tmp_path / "runs.sqlite")
+
+    graph = compile_workflow(workflow, store=store)
+    result = graph.invoke({"run_id": "run-scalar", "inputs": {"topic": "ABH"}})
+
+    assert result["outputs"]["draft"] == "Draft ABH"
+    assert result["outputs"]["review"] == "Review Draft ABH"
+    draft_event = [event for event in result["events"] if event.node_id == "draft"][0]
+    assert draft_event.output["result"] == "Draft ABH"
+    assert draft_event.metadata["contract"]["output"]["status"] == "passed"

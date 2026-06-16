@@ -215,3 +215,108 @@ validations:
     [node] = report["timeline"]
     assert node["attempts"] == 2
     assert node["policy"]["outcome"] == "retry_exhausted"
+
+
+def test_build_run_report_summarizes_output_contract_status(tmp_path):
+    store = RunStore(tmp_path / "runs.sqlite")
+    workflow_path = tmp_path / "report_output_contract_workflow.yaml"
+    workflow_path.write_text(
+        """
+id: report-output-contract-workflow
+entrypoint: python_echo
+nodes:
+  python_echo:
+    type: tool
+    contract:
+      output:
+        type: object
+        required_fields:
+          result: string
+          adapter: string
+    tool:
+      adapter: python
+      name: echo
+      args:
+        value: "{topic}"
+validations:
+  - type: run_status
+    equals: completed
+  - type: node_contract
+    node: python_echo
+    equals: passed
+""".strip(),
+        encoding="utf-8",
+    )
+    workflow = load_workflow(workflow_path)
+    result = run_workflow(workflow, {"topic": "ABH"}, store=store)
+
+    report = build_run_report(result.run_id, store=store)
+
+    assert report["summary"]["contracts"] == {
+        "passed": 1,
+        "failed": 0,
+        "unchecked": 0,
+    }
+    [node] = report["timeline"]
+    assert node["contract"] == {
+        "output": {
+            "status": "passed",
+            "type": "object",
+            "required_fields": {
+                "result": "string",
+                "adapter": "string",
+            },
+            "missing_fields": [],
+            "type_errors": [],
+        }
+    }
+
+
+def test_build_run_report_identifies_output_contract_failure(tmp_path):
+    store = RunStore(tmp_path / "runs.sqlite")
+    workflow_path = tmp_path / "report_output_contract_failure_workflow.yaml"
+    workflow_path.write_text(
+        """
+id: report-output-contract-failure-workflow
+entrypoint: python_echo
+nodes:
+  python_echo:
+    type: tool
+    contract:
+      output:
+        type: object
+        required_fields:
+          missing: string
+    tool:
+      adapter: python
+      name: echo
+      args:
+        value: "{topic}"
+validations:
+  - type: run_status
+    equals: failed
+  - type: node_contract
+    node: python_echo
+    equals: failed
+""".strip(),
+        encoding="utf-8",
+    )
+    workflow = load_workflow(workflow_path)
+    result = run_workflow(workflow, {"topic": "ABH"}, store=store)
+
+    report = build_run_report(result.run_id, store=store)
+
+    assert report["status"] == "failed"
+    assert report["summary"]["contracts"] == {
+        "passed": 0,
+        "failed": 1,
+        "unchecked": 0,
+    }
+    assert report["failure"] == {
+        "node_id": "python_echo",
+        "message": "output contract failed for node 'python_echo': missing field 'missing'",
+        "contract_status": "failed",
+    }
+    [node] = report["timeline"]
+    assert node["contract"]["output"]["status"] == "failed"
+    assert node["contract"]["output"]["missing_fields"] == ["missing"]

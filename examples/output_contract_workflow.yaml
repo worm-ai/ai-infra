@@ -1,0 +1,26 @@
+id: output-contract-workflow
+name: Output Contract Workflow
+version: "0.1"
+entrypoint: python_echo
+nodes:
+  python_echo:
+    type: tool
+    contract:
+      output:
+        type: object
+        required_fields:
+          result: string
+          adapter: string
+    tool:
+      adapter: python
+      name: echo
+      args:
+        value: "{topic}"
+validations:
+  - type: run_status
+    equals: completed
+  - type: node_completed
+    node: python_echo
+  - type: node_contract
+    node: python_echo
+    equals: passed
