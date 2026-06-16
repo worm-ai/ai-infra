@@ -1,0 +1,40 @@
+id: redaction-workflow
+name: Redaction Workflow
+version: "0.1"
+entrypoint: secret_echo
+governance:
+  required_env:
+    - AI_INFRA_TEST_TOKEN
+  sensitive_paths:
+    - inputs.api_key
+    - node_output.secret_echo.result
+    - tool_invocation.secret_echo.input.args.value
+nodes:
+  secret_echo:
+    type: tool
+    tool:
+      adapter: python
+      name: echo
+      args:
+        value: "{api_key}"
+validations:
+  - type: run_status
+    equals: completed
+  - type: assertion
+    source: run
+    path: inputs.api_key
+    equals: "[REDACTED]"
+  - type: assertion
+    source: report
+    path: summary.redaction.redacted_nodes
+    equals: 1
+  - type: assertion
+    source: node_output
+    node: secret_echo
+    path: result
+    equals: "[REDACTED]"
+  - type: assertion
+    source: tool_invocation
+    node: secret_echo
+    path: input.args.value
+    equals: "[REDACTED]"

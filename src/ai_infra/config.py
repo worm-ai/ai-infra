@@ -400,7 +400,7 @@ def _validate_workflow_governance(governance: dict[str, Any]) -> None:
         raise WorkflowValidationError("workflow governance must be a mapping")
     _reject_unknown_fields(
         governance,
-        {"max_node_executions", "default_node_timeout_ms"},
+        {"max_node_executions", "default_node_timeout_ms", "required_env", "sensitive_paths"},
         "workflow governance",
     )
     _validate_positive_int(
@@ -413,6 +413,8 @@ def _validate_workflow_governance(governance: dict[str, Any]) -> None:
         "default_node_timeout_ms",
         "workflow governance default_node_timeout_ms",
     )
+    _validate_string_list(governance, "required_env", "workflow governance required_env")
+    _validate_sensitive_paths(governance.get("sensitive_paths"))
 
 
 def _validate_node_governance(node: WorkflowNode) -> None:
@@ -439,6 +441,36 @@ def _validate_positive_int(config: dict[str, Any], key: str, context: str) -> No
     value = config[key]
     if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
         raise WorkflowValidationError(f"{context} must be a positive integer")
+
+
+def _validate_string_list(config: dict[str, Any], key: str, context: str) -> None:
+    if key not in config:
+        return
+    value = config[key]
+    if not isinstance(value, list):
+        raise WorkflowValidationError(f"{context} must be a list")
+    for index, item in enumerate(value):
+        if not _is_non_empty_string(item):
+            raise WorkflowValidationError(f"{context}[{index}] must be a non-empty string")
+
+
+def _validate_sensitive_paths(value: Any) -> None:
+    if value is None:
+        return
+    if not isinstance(value, list):
+        raise WorkflowValidationError("workflow governance sensitive_paths must be a list")
+    allowed_roots = {"inputs", "outputs", "node_output", "node_metadata", "tool_invocation"}
+    for index, item in enumerate(value):
+        context = f"workflow governance sensitive_paths[{index}]"
+        if not _is_non_empty_string(item):
+            raise WorkflowValidationError(f"{context} must be a non-empty string")
+        parts = str(item).split(".")
+        if len(parts) < 2 or any(not part.strip() for part in parts):
+            raise WorkflowValidationError(f"{context} must include a root and path")
+        if parts[0] not in allowed_roots:
+            raise WorkflowValidationError(f"{context} has unsupported root {parts[0]!r}")
+        if parts[0] in {"node_output", "node_metadata", "tool_invocation"} and len(parts) < 3:
+            raise WorkflowValidationError(f"{context} must include root, node, and path")
 
 
 def _validate_run_validation(index: int, validation: WorkflowValidation, node_ids: set[str]) -> None:

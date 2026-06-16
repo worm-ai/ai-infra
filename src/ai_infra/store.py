@@ -189,6 +189,25 @@ class RunStore:
                 ),
             )
 
+    def replace_events(self, run_id: str, events: list[NodeEvent]) -> None:
+        with self._connect() as connection:
+            connection.execute("delete from node_events where run_id = ?", (run_id,))
+            for event in events:
+                connection.execute(
+                    """
+                    insert into node_events (run_id, node_id, status, input_json, output_json, metadata_json)
+                    values (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        event.run_id,
+                        event.node_id,
+                        event.status,
+                        json.dumps(event.input, ensure_ascii=False),
+                        json.dumps(event.output, ensure_ascii=False),
+                        json.dumps(event.metadata, ensure_ascii=False),
+                    ),
+                )
+
     def count_node_executions(self, run_id: str) -> int:
         with self._connect() as connection:
             row = connection.execute(

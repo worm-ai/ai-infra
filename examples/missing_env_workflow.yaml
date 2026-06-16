@@ -1,0 +1,20 @@
+id: missing-env-workflow
+name: Missing Env Workflow
+version: "0.1"
+entrypoint: secret_echo
+governance:
+  required_env:
+    - AI_INFRA_TEST_TOKEN
+  sensitive_paths:
+    - inputs.api_key
+nodes:
+  secret_echo:
+    type: tool
+    tool:
+      adapter: python
+      name: echo
+      args:
+        value: "{api_key}"
+validations:
+  - type: run_status
+    equals: failed

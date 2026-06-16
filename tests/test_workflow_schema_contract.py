@@ -256,6 +256,49 @@ validations:
     assert workflow.validations[0].config == {"node": "guarded", "equals": "within_limits"}
 
 
+def test_load_workflow_accepts_input_secret_environment_governance_contract(tmp_path):
+    path = write_workflow(
+        tmp_path,
+        """
+id: secret-governance-contract
+entrypoint: secret_echo
+governance:
+  required_env:
+    - AI_INFRA_TEST_TOKEN
+  sensitive_paths:
+    - inputs.api_key
+    - node_output.secret_echo.result
+    - tool_invocation.secret_echo.input.args.value
+nodes:
+  secret_echo:
+    type: tool
+    tool:
+      adapter: python
+      name: echo
+      args:
+        value: "{api_key}"
+validations:
+  - type: run_status
+    equals: completed
+  - type: assertion
+    source: node_output
+    node: secret_echo
+    path: result
+    equals: "[REDACTED]"
+""",
+    )
+
+    workflow = load_workflow(path)
+    validate_workflow(workflow)
+
+    assert workflow.governance["required_env"] == ["AI_INFRA_TEST_TOKEN"]
+    assert workflow.governance["sensitive_paths"] == [
+        "inputs.api_key",
+        "node_output.secret_echo.result",
+        "tool_invocation.secret_echo.input.args.value",
+    ]
+
+
 def test_load_workflow_accepts_reserved_mcp_tool_contract(tmp_path):
     path = write_workflow(
         tmp_path,
@@ -390,6 +433,39 @@ max_node_executions: 2
 remote_cancel: true
 """,
             "workflow governance has unsupported field 'remote_cancel'",
+        ),
+        (
+            """
+required_env: AI_INFRA_TEST_TOKEN
+""",
+            "workflow governance required_env must be a list",
+        ),
+        (
+            """
+required_env:
+  - ""
+""",
+            "workflow governance required_env[0] must be a non-empty string",
+        ),
+        (
+            """
+sensitive_paths: inputs.api_key
+""",
+            "workflow governance sensitive_paths must be a list",
+        ),
+        (
+            """
+sensitive_paths:
+  - secrets.api_key
+""",
+            "workflow governance sensitive_paths[0] has unsupported root 'secrets'",
+        ),
+        (
+            """
+sensitive_paths:
+  - inputs
+""",
+            "workflow governance sensitive_paths[0] must include a root and path",
         ),
     ],
 )

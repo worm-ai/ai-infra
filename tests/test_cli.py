@@ -610,6 +610,136 @@ def test_cli_validation_assertions_report_pass_and_failure(tmp_path):
     )
 
 
+def test_cli_redaction_governance_report_verify_and_export_bundle(tmp_path, monkeypatch):
+    monkeypatch.setenv("AI_INFRA_TEST_TOKEN", "env-secret-value")
+    workflow_path = tmp_path / "cli_redaction_workflow.yaml"
+    input_path = tmp_path / "cli_redaction_input.json"
+    workflow_path.write_text(
+        """
+id: cli-redaction-workflow
+entrypoint: secret_echo
+governance:
+  required_env:
+    - AI_INFRA_TEST_TOKEN
+  sensitive_paths:
+    - inputs.api_key
+    - node_output.secret_echo.result
+    - tool_invocation.secret_echo.input.args.value
+nodes:
+  secret_echo:
+    type: tool
+    tool:
+      adapter: python
+      name: echo
+      args:
+        value: "{api_key}"
+validations:
+  - type: run_status
+    equals: completed
+  - type: assertion
+    source: run
+    path: inputs.api_key
+    equals: "[REDACTED]"
+  - type: assertion
+    source: report
+    path: summary.redaction.redacted_nodes
+    equals: 1
+  - type: assertion
+    source: tool_invocation
+    node: secret_echo
+    path: input.args.value
+    equals: "[REDACTED]"
+""".strip(),
+        encoding="utf-8",
+    )
+    input_path.write_text(json.dumps({"api_key": "sk-live-secret"}), encoding="utf-8")
+
+    validate = run_cli("validate", str(workflow_path), state_dir=tmp_path)
+    assert validate.returncode == 0
+
+    run = run_cli("run", str(workflow_path), "--input-file", str(input_path), state_dir=tmp_path)
+    assert run.returncode == 0
+    run_payload = json.loads(run.stdout)
+    run_id = run_payload["run"]["run_id"]
+    assert run_payload["run"]["outputs"]["secret_echo"]["result"] == "[REDACTED]"
+
+    logs = run_cli("logs", run_id, state_dir=tmp_path)
+    assert logs.returncode == 0
+    assert "sk-live-secret" not in logs.stdout
+    assert "env-secret-value" not in logs.stdout
+
+    report = run_cli("report", run_id, state_dir=tmp_path)
+    assert report.returncode == 0
+    report_payload = json.loads(report.stdout)
+    assert report_payload["report"]["summary"]["redaction"]["redacted_nodes"] == 1
+    assert "sk-live-secret" not in report.stdout
+    assert "env-secret-value" not in report.stdout
+
+    verify = run_cli("verify", run_id, state_dir=tmp_path)
+    assert verify.returncode == 0
+    assert json.loads(verify.stdout)["verification"]["status"] == "passed"
+
+    bundle = run_cli("export-bundle", run_id, "--output-dir", str(tmp_path / "bundles"), state_dir=tmp_path)
+    assert bundle.returncode == 0
+    bundle_path = Path(json.loads(bundle.stdout)["bundle"]["path"])
+    with zipfile.ZipFile(bundle_path) as archive:
+        for name in ["inputs.json", "events.json", "report.json", "manifest.json"]:
+            content = archive.read(name).decode("utf-8")
+            assert "sk-live-secret" not in content
+            assert "env-secret-value" not in content
+            if name != "manifest.json":
+                assert "[REDACTED]" in content
+
+
+def test_cli_missing_required_env_fails_without_leaking_values(tmp_path, monkeypatch):
+    monkeypatch.delenv("AI_INFRA_TEST_TOKEN", raising=False)
+    workflow_path = tmp_path / "cli_missing_env_workflow.yaml"
+    input_path = tmp_path / "cli_missing_env_input.json"
+    workflow_path.write_text(
+        """
+id: cli-missing-env-workflow
+entrypoint: secret_echo
+governance:
+  required_env:
+    - AI_INFRA_TEST_TOKEN
+  sensitive_paths:
+    - inputs.api_key
+nodes:
+  secret_echo:
+    type: tool
+    tool:
+      adapter: python
+      name: echo
+      args:
+        value: "{api_key}"
+validations:
+  - type: run_status
+    equals: failed
+""".strip(),
+        encoding="utf-8",
+    )
+    input_path.write_text(json.dumps({"api_key": "sk-live-secret"}), encoding="utf-8")
+
+    run = run_cli("run", str(workflow_path), "--input-file", str(input_path), state_dir=tmp_path)
+
+    assert run.returncode == 0
+    payload = json.loads(run.stdout)
+    run_id = payload["run"]["run_id"]
+    assert payload["run"]["status"] == "failed"
+    assert payload["run"]["outputs"] == {}
+    assert "sk-live-secret" not in run.stdout
+
+    report = run_cli("report", run_id, state_dir=tmp_path)
+    assert report.returncode == 0
+    report_payload = json.loads(report.stdout)
+    assert report_payload["report"]["status"] == "failed"
+    assert report_payload["report"]["provenance"]["environment"]["governance"] == {
+        "status": "failed",
+        "missing_required_env": ["AI_INFRA_TEST_TOKEN"],
+    }
+    assert "sk-live-secret" not in report.stdout
+
+
 def test_cli_store_health_runs_and_cleanup_dry_run(tmp_path):
     first = run_cli(
         "run",

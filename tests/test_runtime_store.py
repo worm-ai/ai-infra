@@ -51,6 +51,254 @@ def test_run_workflow_persists_completed_run_and_node_events(tmp_path):
     assert "python_version" in saved.provenance.environment
 
 
+def test_run_workflow_fails_fast_when_required_environment_is_missing(tmp_path, monkeypatch):
+    monkeypatch.delenv("AI_INFRA_TEST_TOKEN", raising=False)
+    store = RunStore(tmp_path / "runs.sqlite")
+    workflow = load_workflow_from_source(
+        """
+id: missing-env-governance
+entrypoint: secret_echo
+governance:
+  required_env:
+    - AI_INFRA_TEST_TOKEN
+nodes:
+  secret_echo:
+    type: tool
+    tool:
+      adapter: python
+      name: echo
+      args:
+        value: "{api_key}"
+validations:
+  - type: run_status
+    equals: failed
+""".strip()
+    )
+
+    result = run_workflow(workflow, {"api_key": "sk-live-secret"}, store=store)
+
+    assert result.status == "failed"
+    assert result.outputs == {}
+    assert result.events == []
+    saved = get_run(result.run_id, store=store)
+    assert saved.status == "failed"
+    assert saved.inputs == {"api_key": "sk-live-secret"}
+    assert saved.outputs == {}
+    assert saved.provenance is not None
+    assert saved.provenance.environment["required_env"] == [
+        {"name": "AI_INFRA_TEST_TOKEN", "present": False}
+    ]
+    assert saved.provenance.environment["governance"]["status"] == "failed"
+    assert saved.provenance.environment["governance"]["missing_required_env"] == ["AI_INFRA_TEST_TOKEN"]
+    serialized = json.dumps(saved.provenance.environment, ensure_ascii=False)
+    assert "sk-live-secret" not in serialized
+
+
+def test_run_workflow_redacts_configured_sensitive_evidence(tmp_path, monkeypatch):
+    monkeypatch.setenv("AI_INFRA_TEST_TOKEN", "env-secret-value")
+    store = RunStore(tmp_path / "runs.sqlite")
+    workflow = load_workflow_from_source(
+        """
+id: redaction-governance
+entrypoint: secret_echo
+governance:
+  required_env:
+    - AI_INFRA_TEST_TOKEN
+  sensitive_paths:
+    - inputs.api_key
+    - node_output.secret_echo.result
+    - tool_invocation.secret_echo.input.args.value
+nodes:
+  secret_echo:
+    type: tool
+    tool:
+      adapter: python
+      name: echo
+      args:
+        value: "{api_key}"
+validations:
+  - type: run_status
+    equals: completed
+  - type: assertion
+    source: run
+    path: inputs.api_key
+    equals: "[REDACTED]"
+  - type: assertion
+    source: node_output
+    node: secret_echo
+    path: result
+    equals: "[REDACTED]"
+  - type: assertion
+    source: tool_invocation
+    node: secret_echo
+    path: input.args.value
+    equals: "[REDACTED]"
+""".strip()
+    )
+
+    result = run_workflow(workflow, {"api_key": "sk-live-secret"}, store=store)
+    verification = validate_stored_run(result.run_id, store=store)
+
+    assert result.status == "completed"
+    assert result.outputs["secret_echo"]["result"] == "[REDACTED]"
+    saved = get_run(result.run_id, store=store)
+    assert saved.inputs == {"api_key": "[REDACTED]"}
+    assert saved.outputs["secret_echo"]["result"] == "[REDACTED]"
+    [event] = saved.events
+    assert event.input["api_key"] == "[REDACTED]"
+    assert event.output["result"] == "[REDACTED]"
+    assert event.output["tool_invocation"]["input"]["args"]["value"] == "[REDACTED]"
+    assert event.metadata["redaction"]["status"] == "redacted"
+    assert event.metadata["redaction"]["marker"] == "[REDACTED]"
+    assert event.metadata["redaction"]["paths"] == [
+        "inputs.api_key",
+        "node_output.secret_echo.result",
+        "tool_invocation.secret_echo.input.args.value",
+    ]
+    assert event.metadata["redaction"]["redacted_count"] >= 4
+    assert event.metadata["redaction"] == {
+        "status": "redacted",
+        "marker": "[REDACTED]",
+        "paths": [
+            "inputs.api_key",
+            "node_output.secret_echo.result",
+            "tool_invocation.secret_echo.input.args.value",
+        ],
+        "redacted_count": event.metadata["redaction"]["redacted_count"],
+    }
+    assert saved.provenance is not None
+    assert saved.provenance.environment["required_env"] == [
+        {"name": "AI_INFRA_TEST_TOKEN", "present": True}
+    ]
+    assert "env-secret-value" not in json.dumps(saved.provenance.environment, ensure_ascii=False)
+    assert "sk-live-secret" not in json.dumps(saved, default=str, ensure_ascii=False)
+    assert verification.status == "passed"
+
+
+def test_run_workflow_redaction_metadata_counts_event_evidence_without_global_output_duplication(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("AI_INFRA_TEST_TOKEN", "env-secret-value")
+    store = RunStore(tmp_path / "runs.sqlite")
+    workflow = load_workflow_from_source(
+        """
+id: multi-node-redaction-governance
+entrypoint: secret_echo
+governance:
+  required_env:
+    - AI_INFRA_TEST_TOKEN
+  sensitive_paths:
+    - inputs.api_key
+    - node_output.secret_echo.result
+nodes:
+  secret_echo:
+    type: tool
+    next: public_summary
+    tool:
+      adapter: python
+      name: echo
+      args:
+        value: "{api_key}"
+  public_summary:
+    type: template
+    template: "public status"
+validations:
+  - type: run_status
+    equals: completed
+""".strip()
+    )
+
+    result = run_workflow(workflow, {"api_key": "sk-live-secret"}, store=store)
+
+    assert result.status == "completed"
+    saved = get_run(result.run_id, store=store)
+    events = {event.node_id: event for event in saved.events}
+    assert events["secret_echo"].metadata["redaction"]["status"] == "redacted"
+    assert events["secret_echo"].metadata["redaction"]["redacted_count"] == 9
+    assert events["public_summary"].metadata["redaction"]["redacted_count"] == 5
+    assert saved.outputs["secret_echo"]["result"] == "[REDACTED]"
+    assert saved.outputs["public_summary"] == "public status"
+    assert "sk-live-secret" not in json.dumps(saved, default=str, ensure_ascii=False)
+
+
+def test_run_workflow_never_persists_raw_secret_bearing_events(tmp_path):
+    store = RunStore(tmp_path / "runs.sqlite")
+    workflow = load_workflow_from_source(
+        """
+id: pre-persist-redaction
+entrypoint: secret_echo
+governance:
+  sensitive_paths:
+    - inputs.api_key
+    - node_output.secret_echo.result
+    - tool_invocation.secret_echo.input.args.value
+nodes:
+  secret_echo:
+    type: tool
+    tool:
+      adapter: python
+      name: echo
+      args:
+        value: "{api_key}"
+""".strip()
+    )
+
+    run_workflow(workflow, {"api_key": "sk-live-secret"}, store=store)
+
+    database_bytes = (tmp_path / "runs.sqlite").read_bytes()
+    assert b"sk-live-secret" not in database_bytes
+    assert b"[REDACTED]" in database_bytes
+
+
+def test_run_workflow_redacts_configured_outputs_paths(tmp_path):
+    store = RunStore(tmp_path / "runs.sqlite")
+    workflow = load_workflow_from_source(
+        """
+id: output-root-redaction
+entrypoint: secret_echo
+governance:
+  sensitive_paths:
+    - outputs.secret_echo.result
+nodes:
+  secret_echo:
+    type: tool
+    tool:
+      adapter: python
+      name: echo
+      args:
+        value: "{api_key}"
+validations:
+  - type: assertion
+    source: run
+    path: outputs.secret_echo.result
+    equals: "[REDACTED]"
+  - type: assertion
+    source: node_output
+    node: secret_echo
+    path: result
+    equals: "[REDACTED]"
+""".strip()
+    )
+
+    result = run_workflow(workflow, {"api_key": "sk-live-secret"}, store=store)
+    verification = validate_stored_run(result.run_id, store=store)
+
+    assert result.outputs["secret_echo"]["result"] == "[REDACTED]"
+    saved = get_run(result.run_id, store=store)
+    assert saved.outputs["secret_echo"]["result"] == "[REDACTED]"
+    [event] = saved.events
+    assert event.output["result"] == "[REDACTED]"
+    assert event.output["tool_invocation"]["input"]["args"]["value"] == "[REDACTED]"
+    assert event.metadata["redaction"]["status"] == "redacted"
+    assert saved.inputs == {"api_key": "[REDACTED]"}
+    assert saved.provenance is not None
+    assert "sk-live-secret" not in json.dumps(saved.provenance.environment, ensure_ascii=False)
+    assert "sk-live-secret" not in json.dumps(saved.outputs, ensure_ascii=False)
+    assert "sk-live-secret" not in json.dumps(saved.events, default=str, ensure_ascii=False)
+    assert verification.status == "passed"
+
+
 def test_validate_run_records_validation_results(tmp_path):
     store = RunStore(tmp_path / "runs.sqlite")
     workflow = load_workflow(Path("examples/hello_workflow.yaml"))

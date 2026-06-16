@@ -54,6 +54,54 @@ def test_build_run_report_summarizes_successful_tool_run(tmp_path):
     assert report["timeline"][2]["tool"]["status_code"] == 200
 
 
+def test_build_run_report_summarizes_redaction_governance_without_secret_values(tmp_path, monkeypatch):
+    monkeypatch.setenv("AI_INFRA_TEST_TOKEN", "env-secret-value")
+    store = RunStore(tmp_path / "runs.sqlite")
+    workflow_path = tmp_path / "redaction_report_workflow.yaml"
+    workflow_path.write_text(
+        """
+id: redaction-report-workflow
+entrypoint: secret_echo
+governance:
+  required_env:
+    - AI_INFRA_TEST_TOKEN
+  sensitive_paths:
+    - inputs.api_key
+    - node_output.secret_echo.result
+    - tool_invocation.secret_echo.input.args.value
+nodes:
+  secret_echo:
+    type: tool
+    tool:
+      adapter: python
+      name: echo
+      args:
+        value: "{api_key}"
+validations:
+  - type: run_status
+    equals: completed
+""".strip(),
+        encoding="utf-8",
+    )
+    workflow = load_workflow(workflow_path)
+
+    result = run_workflow(workflow, {"api_key": "sk-live-secret"}, store=store)
+    report = build_run_report(result.run_id, store=store)
+
+    assert report["inputs"]["api_key"] == "[REDACTED]"
+    assert report["outputs"]["secret_echo"]["result"] == "[REDACTED]"
+    assert report["provenance"]["environment"]["required_env"] == [
+        {"name": "AI_INFRA_TEST_TOKEN", "present": True}
+    ]
+    [node] = report["timeline"]
+    assert node["output"]["result"] == "[REDACTED]"
+    assert node["tool"]["input"]["args"]["value"] == "[REDACTED]"
+    assert node["redaction"]["status"] == "redacted"
+    serialized = str(report)
+    assert "sk-live-secret" not in serialized
+    assert "env-secret-value" not in serialized
+
+
 def test_build_run_report_summarizes_mcp_reserved_tool_boundary(tmp_path):
     store = RunStore(tmp_path / "runs.sqlite")
     workflow = load_workflow(Path("examples/mcp_reserved_workflow.yaml"))

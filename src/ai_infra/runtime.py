@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,6 +11,8 @@ from .config import Workflow, load_workflow_from_source, validate_workflow
 from .langgraph_runner import compile_workflow
 from .provenance import build_run_provenance, sha256_text
 from .store import NodeEvent, RunStore, StoredRun, VerificationCheck
+
+REDACTION_MARKER = "[REDACTED]"
 
 
 @dataclass(frozen=True)
@@ -37,21 +40,49 @@ def run_workflow(workflow: Workflow, inputs: dict[str, Any], store: RunStore | N
     run_store = store or default_store()
     run_id = f"run-{uuid.uuid4().hex[:12]}"
     workflow_source_path = str(workflow.source_path) if workflow.source_path else None
-    provenance = build_run_provenance(workflow, inputs)
+    governance_evidence = _environment_governance_evidence(workflow)
+    sensitive_values = _sensitive_input_values(inputs, workflow.governance)
+    safe_inputs = _redact_run_inputs(inputs, workflow.governance, sensitive_values)
+    provenance = _governed_provenance(workflow, safe_inputs, governance_evidence)
+    missing_required_env = [
+        item["name"]
+        for item in governance_evidence["required_env"]
+        if item.get("present") is False
+    ]
+    if missing_required_env:
+        provenance.environment["governance"] = {
+            "status": "failed",
+            "missing_required_env": missing_required_env,
+        }
+        run_store.save_run(
+            StoredRun(
+                run_id=run_id,
+                workflow_id=workflow.id,
+                status="failed",
+                inputs=safe_inputs,
+                outputs={},
+                workflow_source_path=workflow_source_path,
+                provenance=provenance,
+            )
+        )
+        return RunResult(run_id=run_id, workflow_id=workflow.id, status="failed", outputs={}, events=[])
 
     run_store.save_run(
         StoredRun(
             run_id=run_id,
             workflow_id=workflow.id,
             status="running",
-            inputs=inputs,
+            inputs=safe_inputs,
             outputs={},
             workflow_source_path=workflow_source_path,
             provenance=provenance,
         )
     )
 
-    graph = compile_workflow(workflow, store=run_store)
+    graph = compile_workflow(
+        workflow,
+        store=_RedactingRunStore(run_store, workflow.governance, sensitive_values),
+    )
     state = graph.invoke(
         {
             "run_id": run_id,
@@ -65,19 +96,26 @@ def run_workflow(workflow: Workflow, inputs: dict[str, Any], store: RunStore | N
     outputs = dict(state.get("outputs") or {})
     events = list(state.get("events") or [])
     status = str(state.get("status") or "completed")
+    final_sensitive_values = set(sensitive_values)
+    final_sensitive_values.update(_configured_run_output_values(outputs, workflow.governance))
+    safe_inputs = _redact_run_inputs(inputs, workflow.governance, final_sensitive_values)
+    provenance = _governed_provenance(workflow, safe_inputs, governance_evidence)
+    safe_outputs, safe_events = _redact_run_evidence(workflow.governance, outputs, events, sensitive_values)
+    if safe_events != events:
+        run_store.replace_events(run_id, safe_events)
 
     run_store.save_run(
         StoredRun(
             run_id=run_id,
             workflow_id=workflow.id,
             status=status,
-            inputs=inputs,
-            outputs=outputs,
+            inputs=safe_inputs,
+            outputs=safe_outputs,
             workflow_source_path=workflow_source_path,
             provenance=provenance,
         )
     )
-    return RunResult(run_id=run_id, workflow_id=workflow.id, status=status, outputs=outputs, events=events)
+    return RunResult(run_id=run_id, workflow_id=workflow.id, status=status, outputs=safe_outputs, events=safe_events)
 
 
 def resume_workflow(run_id: str, workflow: Workflow, store: RunStore | None = None) -> RunResult:
@@ -168,6 +206,322 @@ def _evaluate_workflow_validations(workflow: Workflow, stored: StoredRun) -> lis
         _evaluate_validation(validation.type, validation.config, stored)
         for validation in workflow.validations
     ]
+
+
+def _environment_governance_evidence(workflow: Workflow) -> dict[str, Any]:
+    required_env = workflow.governance.get("required_env", [])
+    if not isinstance(required_env, list):
+        required_env = []
+    return {
+        "required_env": [
+            {"name": str(name), "present": str(name) in os.environ}
+            for name in required_env
+        ]
+    }
+
+
+def _sensitive_input_values(inputs: dict[str, Any], governance: dict[str, Any]) -> set[Any]:
+    values: set[Any] = set()
+    for path in _sensitive_paths(governance, "inputs"):
+        value, found = _lookup_path(inputs, path)
+        if found and isinstance(value, (str, int, float, bool)):
+            values.add(value)
+    return values
+
+
+def _governed_provenance(
+    workflow: Workflow,
+    safe_inputs: dict[str, Any],
+    governance_evidence: dict[str, Any],
+):
+    provenance = build_run_provenance(workflow, safe_inputs)
+    environment = dict(provenance.environment)
+    environment["required_env"] = list(governance_evidence.get("required_env", []))
+    provenance.environment.clear()
+    provenance.environment.update(environment)
+    return provenance
+
+
+def _redact_run_inputs(
+    inputs: dict[str, Any],
+    governance: dict[str, Any],
+    sensitive_values: set[Any],
+) -> dict[str, Any]:
+    safe_inputs = _deep_copy(inputs)
+    for path in _sensitive_paths(governance, "inputs"):
+        _redact_path(safe_inputs, path)
+    _redact_values(safe_inputs, sensitive_values)
+    return safe_inputs if isinstance(safe_inputs, dict) else {}
+
+
+def _redact_run_evidence(
+    governance: dict[str, Any],
+    outputs: dict[str, Any],
+    events: list[NodeEvent],
+    sensitive_values: set[Any],
+) -> tuple[dict[str, Any], list[NodeEvent]]:
+    safe_outputs = _redact_run_outputs(outputs, governance, sensitive_values)
+    redacted_events = [
+        _redact_node_event(governance, event, sensitive_values)
+        for event in events
+    ]
+    return safe_outputs if isinstance(safe_outputs, dict) else {}, redacted_events
+
+
+class _RedactingRunStore:
+    def __init__(self, inner: RunStore, governance: dict[str, Any], sensitive_values: set[Any]):
+        self._inner = inner
+        self._governance = governance
+        self._sensitive_values = set(sensitive_values)
+
+    @property
+    def state_dir(self) -> Path:
+        return self._inner.state_dir
+
+    def add_event(self, event: NodeEvent) -> None:
+        self._inner.add_event(_redact_node_event(self._governance, event, self._sensitive_values))
+
+    def count_node_executions(self, run_id: str) -> int:
+        return self._inner.count_node_executions(run_id)
+
+    def reserve_node_execution(
+        self,
+        run_id: str,
+        node_id: str,
+        max_node_executions: int,
+    ) -> tuple[bool, int]:
+        return self._inner.reserve_node_execution(run_id, node_id, max_node_executions)
+
+
+def _redact_run_outputs(
+    outputs: dict[str, Any],
+    governance: dict[str, Any],
+    sensitive_values: set[Any],
+) -> dict[str, Any]:
+    safe_outputs = _deep_copy(outputs)
+    output_sensitive_values = set(sensitive_values)
+    output_sensitive_values.update(_configured_run_output_values(outputs, governance))
+    for path in _sensitive_paths(governance, "outputs"):
+        _redact_path(safe_outputs, path)
+    for node_id, path in _node_scoped_paths(governance, "node_output"):
+        _redact_path(safe_outputs.get(node_id), path)
+    _redact_values(safe_outputs, output_sensitive_values)
+    return safe_outputs if isinstance(safe_outputs, dict) else {}
+
+
+def _redact_node_event(
+    governance: dict[str, Any],
+    event: NodeEvent,
+    sensitive_values: set[Any],
+) -> NodeEvent:
+    event_input = _deep_copy(event.input)
+    event_output = _deep_copy(event.output)
+    event_metadata = _deep_copy(event.metadata)
+    event_sensitive_values = set(sensitive_values)
+    event_sensitive_values.update(
+        _configured_event_sensitive_values(
+            governance,
+            event.node_id,
+            event_input,
+            event_output,
+            event_metadata,
+        )
+    )
+    redacted_count = _redact_configured_event_paths(
+        governance,
+        event.node_id,
+        event_input,
+        event_output,
+        event_metadata,
+    )
+    redacted_count += _redact_values(event_input, event_sensitive_values)
+    redacted_count += _redact_values(event_output, event_sensitive_values)
+    redacted_count += _redact_values(event_metadata, event_sensitive_values)
+    if redacted_count and isinstance(event_metadata, dict):
+        event_metadata["redaction"] = {
+            "status": "redacted",
+            "marker": REDACTION_MARKER,
+            "paths": list(governance.get("sensitive_paths", [])),
+            "redacted_count": redacted_count,
+        }
+    return NodeEvent(
+        run_id=event.run_id,
+        node_id=event.node_id,
+        status=event.status,
+        input=event_input if isinstance(event_input, dict) else {},
+        output=event_output,
+        metadata=event_metadata if isinstance(event_metadata, dict) else {},
+    )
+
+
+def _configured_run_output_values(outputs: dict[str, Any], governance: dict[str, Any]) -> set[Any]:
+    values: set[Any] = set()
+    for path in _sensitive_paths(governance, "outputs"):
+        _add_scalar_path_value(values, outputs, path)
+    for node_id, path in _node_scoped_paths(governance, "node_output"):
+        _add_scalar_path_value(values, outputs.get(node_id), path)
+    return values
+
+
+def _configured_event_sensitive_values(
+    governance: dict[str, Any],
+    node_id: str,
+    event_input: Any,
+    event_output: Any,
+    event_metadata: Any,
+) -> set[Any]:
+    values: set[Any] = set()
+    for path in _sensitive_paths(governance, "inputs"):
+        _add_scalar_path_value(values, event_input, path)
+    for path in _sensitive_paths(governance, "outputs"):
+        _add_scalar_path_value(values, event_input, path)
+        if path and path[0] == node_id:
+            _add_scalar_path_value(values, event_output, path[1:])
+    for scoped_node_id, path in _node_scoped_paths(governance, "node_output"):
+        _add_scalar_path_value(values, event_input, [scoped_node_id, *path])
+        if scoped_node_id == node_id:
+            _add_scalar_path_value(values, event_output, path)
+    for scoped_node_id, path in _node_scoped_paths(governance, "node_metadata"):
+        if scoped_node_id == node_id:
+            _add_scalar_path_value(values, event_metadata, path)
+    if isinstance(event_output, dict) and isinstance(event_output.get("tool_invocation"), dict):
+        for scoped_node_id, path in _node_scoped_paths(governance, "tool_invocation"):
+            if scoped_node_id == node_id:
+                _add_scalar_path_value(values, event_output["tool_invocation"], path)
+    return values
+
+
+def _redact_configured_event_paths(
+    governance: dict[str, Any],
+    node_id: str,
+    event_input: Any,
+    event_output: Any,
+    event_metadata: Any,
+) -> int:
+    count = 0
+    for path in _sensitive_paths(governance, "inputs"):
+        count += _redact_path(event_input, path)
+    for path in _sensitive_paths(governance, "outputs"):
+        count += _redact_path(event_input, path)
+        if path and path[0] == node_id:
+            count += _redact_path(event_output, path[1:])
+    for scoped_node_id, path in _node_scoped_paths(governance, "node_output"):
+        count += _redact_path(event_input, [scoped_node_id, *path])
+        if scoped_node_id == node_id:
+            count += _redact_path(event_output, path)
+    for scoped_node_id, path in _node_scoped_paths(governance, "node_metadata"):
+        if scoped_node_id == node_id:
+            count += _redact_path(event_metadata, path)
+    if isinstance(event_output, dict) and isinstance(event_output.get("tool_invocation"), dict):
+        for scoped_node_id, path in _node_scoped_paths(governance, "tool_invocation"):
+            if scoped_node_id == node_id:
+                count += _redact_path(event_output["tool_invocation"], path)
+    return count
+
+
+def _sensitive_paths(governance: dict[str, Any], root: str) -> list[list[str]]:
+    raw_paths = governance.get("sensitive_paths", [])
+    if not isinstance(raw_paths, list):
+        return []
+    prefix = f"{root}."
+    return [
+        str(path)[len(prefix):].split(".")
+        for path in raw_paths
+        if isinstance(path, str) and path.startswith(prefix)
+    ]
+
+
+def _node_scoped_paths(governance: dict[str, Any], root: str) -> list[tuple[str, list[str]]]:
+    raw_paths = governance.get("sensitive_paths", [])
+    if not isinstance(raw_paths, list):
+        return []
+    prefix = f"{root}."
+    paths: list[tuple[str, list[str]]] = []
+    for path in raw_paths:
+        if not isinstance(path, str) or not path.startswith(prefix):
+            continue
+        parts = path[len(prefix):].split(".")
+        if len(parts) >= 2:
+            paths.append((parts[0], parts[1:]))
+    return paths
+
+
+def _add_scalar_path_value(values: set[Any], value: Any, parts: list[str]) -> None:
+    path_value, found = _lookup_path(value, parts)
+    if found and isinstance(path_value, (str, int, float, bool)):
+        values.add(path_value)
+
+
+def _lookup_path(value: Any, parts: list[str]) -> tuple[Any, bool]:
+    current = value
+    for part in parts:
+        if isinstance(current, dict) and part in current:
+            current = current[part]
+            continue
+        if isinstance(current, list) and part.isdecimal() and int(part) < len(current):
+            current = current[int(part)]
+            continue
+        return None, False
+    return current, True
+
+
+def _redact_values(value: Any, sensitive_values: set[Any]) -> int:
+    if not sensitive_values:
+        return 0
+    count = 0
+    if isinstance(value, dict):
+        for key, item in list(value.items()):
+            if _is_sensitive_scalar(item, sensitive_values):
+                value[key] = REDACTION_MARKER
+                count += 1
+            else:
+                count += _redact_values(item, sensitive_values)
+    elif isinstance(value, list):
+        for index, item in enumerate(list(value)):
+            if _is_sensitive_scalar(item, sensitive_values):
+                value[index] = REDACTION_MARKER
+                count += 1
+            else:
+                count += _redact_values(item, sensitive_values)
+    return count
+
+
+def _is_sensitive_scalar(value: Any, sensitive_values: set[Any]) -> bool:
+    return isinstance(value, (str, int, float, bool)) and value in sensitive_values
+
+
+def _redact_path(value: Any, parts: list[str]) -> int:
+    if not parts:
+        return 0
+    current = value
+    for part in parts[:-1]:
+        if isinstance(current, dict) and part in current:
+            current = current[part]
+            continue
+        if isinstance(current, list) and part.isdecimal() and int(part) < len(current):
+            current = current[int(part)]
+            continue
+        return 0
+    final = parts[-1]
+    if isinstance(current, dict) and final in current:
+        if current[final] != REDACTION_MARKER:
+            current[final] = REDACTION_MARKER
+            return 1
+        return 0
+    if isinstance(current, list) and final.isdecimal() and int(final) < len(current):
+        index = int(final)
+        if current[index] != REDACTION_MARKER:
+            current[index] = REDACTION_MARKER
+            return 1
+    return 0
+
+
+def _deep_copy(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _deep_copy(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_deep_copy(item) for item in value]
+    return value
 
 
 def _record_verification(

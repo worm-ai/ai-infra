@@ -48,6 +48,9 @@ def build_stored_run_report(run: Any) -> dict[str, Any]:
     governance_summary = _governance_summary(timeline)
     if governance_summary is not None:
         summary["governance"] = governance_summary
+    redaction_summary = _redaction_summary(timeline)
+    if redaction_summary is not None:
+        summary["redaction"] = redaction_summary
 
     return {
         "run_id": run.run_id,
@@ -107,6 +110,7 @@ def _node_report(index: int, events: list[NodeEvent]) -> dict[str, Any]:
         "resume": _resume_report(event),
         "artifacts": _artifact_report(event),
         "governance": _governance_report(event),
+        "redaction": _redaction_report(event),
     }
 
 
@@ -214,6 +218,29 @@ def _governance_report(event: NodeEvent) -> dict[str, Any] | None:
     if not isinstance(governance, dict):
         return None
     return governance
+
+
+def _redaction_report(event: NodeEvent) -> dict[str, Any] | None:
+    redaction = event.metadata.get("redaction")
+    if not isinstance(redaction, dict):
+        return None
+    return redaction
+
+
+def _redaction_summary(timeline: list[dict[str, Any]]) -> dict[str, int] | None:
+    redacted_nodes = 0
+    redacted_values = 0
+    for node in timeline:
+        redaction = node.get("redaction")
+        if not isinstance(redaction, dict):
+            continue
+        redacted_nodes += 1
+        count = redaction.get("redacted_count")
+        if isinstance(count, int):
+            redacted_values += count
+    if not redacted_nodes:
+        return None
+    return {"redacted_nodes": redacted_nodes, "redacted_values": redacted_values}
 
 
 def _governance_summary(timeline: list[dict[str, Any]]) -> dict[str, int] | None:
