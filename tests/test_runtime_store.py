@@ -2,6 +2,7 @@ import hashlib
 import json
 from pathlib import Path
 import shlex
+import time
 
 from ai_infra import (
     get_run,
@@ -691,6 +692,236 @@ validations:
     checks = {check.type: check for check in verification.checks}
     assert checks["node_artifact"].status == "passed"
     assert "artifact 'note' exists with sha256" in checks["node_artifact"].message
+
+
+def test_run_workflow_persists_node_timeout_governance_evidence(tmp_path):
+    def slow_tool(args):
+        time.sleep(0.01)
+        return "too slow"
+
+    default_tool_registry.register_python("governance_slow_tool", slow_tool)
+    workflow_path = tmp_path / "governance_timeout_workflow.yaml"
+    workflow_path.write_text(
+        """
+id: governance-timeout-workflow
+entrypoint: slow
+nodes:
+  slow:
+    type: tool
+    governance:
+      timeout_ms: 1
+    tool:
+      adapter: python
+      name: governance_slow_tool
+validations:
+  - type: run_status
+    equals: failed
+  - type: node_failed
+    node: slow
+  - type: node_governance
+    node: slow
+    equals: timeout
+""".strip(),
+        encoding="utf-8",
+    )
+    store = RunStore(tmp_path / "runs.sqlite")
+    workflow = load_workflow(workflow_path)
+
+    result = run_workflow(workflow, {}, store=store)
+    verification = validate_stored_run(result.run_id, store=store)
+
+    assert result.status == "failed"
+    saved = get_run(result.run_id, store=store)
+    [event] = saved.events
+    assert event.status == "failed"
+    assert "governance" not in event.output
+    assert event.output["error"] == "node 'slow' exceeded timeout budget"
+    assert event.metadata["governance"]["status"] == "timeout"
+    assert event.metadata["governance"]["timeout_ms"] == 1
+    assert isinstance(event.metadata["governance"]["duration_ms"], int)
+    checks = {check.type: check for check in verification.checks}
+    assert checks["node_governance"].status == "passed"
+    assert "governance status is 'timeout'" in checks["node_governance"].message
+
+
+def test_run_workflow_aborts_downstream_nodes_when_execution_budget_is_exhausted(tmp_path):
+    workflow_path = tmp_path / "governance_budget_workflow.yaml"
+    workflow_path.write_text(
+        """
+id: governance-budget-workflow
+entrypoint: first
+governance:
+  max_node_executions: 1
+nodes:
+  first:
+    type: template
+    next: second
+    template: "First {topic}"
+  second:
+    type: template
+    template: "Second {first}"
+validations:
+  - type: run_status
+    equals: failed
+  - type: node_completed
+    node: first
+  - type: node_governance
+    node: first
+    equals: within_limits
+  - type: node_governance
+    node: second
+    equals: budget_exhausted
+""".strip(),
+        encoding="utf-8",
+    )
+    store = RunStore(tmp_path / "runs.sqlite")
+    workflow = load_workflow(workflow_path)
+
+    result = run_workflow(workflow, {"topic": "ABH"}, store=store)
+    verification = validate_stored_run(result.run_id, store=store)
+
+    assert result.status == "failed"
+    assert result.outputs["first"] == "First ABH"
+    assert "second" not in result.outputs
+    saved = get_run(result.run_id, store=store)
+    assert [event.node_id for event in saved.events] == ["first", "second"]
+    assert saved.events[0].metadata["governance"]["status"] == "within_limits"
+    assert saved.events[1].status == "skipped"
+    assert saved.events[1].output["error"] == "workflow execution budget exhausted before node 'second'"
+    assert saved.events[1].metadata["governance"] == {
+        "status": "budget_exhausted",
+        "reason": "max_node_executions",
+        "max_node_executions": 1,
+        "executions_used": 1,
+    }
+    checks = {check.message for check in verification.checks}
+    assert verification.status == "passed"
+    assert "node 'first' governance status is 'within_limits', expected 'within_limits'" in checks
+    assert "node 'second' governance status is 'budget_exhausted', expected 'budget_exhausted'" in checks
+
+
+def test_run_workflow_enforces_execution_budget_across_fan_out_branches(tmp_path):
+    workflow_path = tmp_path / "governance_fan_out_budget.yaml"
+    workflow_path.write_text(
+        """
+id: governance-fan-out-budget
+entrypoint: start
+governance:
+  max_node_executions: 2
+nodes:
+  start:
+    type: template
+    template: "Start {topic}"
+  left:
+    type: template
+    template: "Left {start}"
+  right:
+    type: template
+    template: "Right {start}"
+edges:
+  - from: start
+    to: left
+  - from: start
+    to: right
+validations:
+  - type: run_status
+    equals: failed
+""".strip(),
+        encoding="utf-8",
+    )
+    store = RunStore(tmp_path / "runs.sqlite")
+    workflow = load_workflow(workflow_path)
+
+    result = run_workflow(workflow, {"topic": "ABH"}, store=store)
+
+    assert result.status == "failed"
+    saved = get_run(result.run_id, store=store)
+    completed = [
+        event.node_id
+        for event in saved.events
+        if event.status == "completed"
+    ]
+    skipped = [
+        event.node_id
+        for event in saved.events
+        if event.status == "skipped"
+    ]
+    assert completed[0] == "start"
+    assert len(completed) == 2
+    assert len(skipped) == 1
+    assert set(completed[1:] + skipped) == {"left", "right"}
+    skipped_event = [event for event in saved.events if event.status == "skipped"][0]
+    assert skipped_event.metadata["governance"] == {
+        "status": "budget_exhausted",
+        "reason": "max_node_executions",
+        "max_node_executions": 2,
+        "executions_used": 2,
+    }
+
+
+def test_run_workflow_persists_abort_evidence_after_governance_halt(tmp_path):
+    workflow_path = tmp_path / "governance_abort_propagation.yaml"
+    workflow_path.write_text(
+        """
+id: governance-abort-propagation
+entrypoint: start
+governance:
+  max_node_executions: 2
+nodes:
+  start:
+    type: template
+    template: "Start {topic}"
+  left:
+    type: template
+    next: left2
+    template: "Left {start}"
+  left2:
+    type: template
+    template: "Left2 {left}"
+  right:
+    type: template
+    template: "Right {start}"
+edges:
+  - from: start
+    to: left
+  - from: start
+    to: right
+validations:
+  - type: run_status
+    equals: failed
+  - type: node_governance
+    node: left2
+    equals: aborted
+""".strip(),
+        encoding="utf-8",
+    )
+    store = RunStore(tmp_path / "runs.sqlite")
+    workflow = load_workflow(workflow_path)
+
+    result = run_workflow(workflow, {"topic": "ABH"}, store=store)
+    verification = validate_stored_run(result.run_id, store=store)
+
+    assert result.status == "failed"
+    saved = get_run(result.run_id, store=store)
+    aborted_events = [
+        event
+        for event in saved.events
+        if event.metadata.get("governance", {}).get("status") == "aborted"
+    ]
+    assert [event.node_id for event in aborted_events] == ["left2"]
+    [aborted] = aborted_events
+    assert aborted.status == "skipped"
+    assert aborted.output == {
+        "error": "workflow halted before node 'left2'",
+        "node_status": "skipped",
+    }
+    assert aborted.metadata["governance"] == {
+        "status": "aborted",
+        "reason": "workflow_halted",
+    }
+    checks = {check.type: check for check in verification.checks}
+    assert verification.status == "passed"
+    assert checks["node_governance"].message == "node 'left2' governance status is 'aborted', expected 'aborted'"
 
 
 def test_node_artifact_validation_uses_stored_copy_when_original_is_removed(tmp_path):

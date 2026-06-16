@@ -11,8 +11,8 @@ class WorkflowValidationError(ValueError):
     pass
 
 
-TOP_LEVEL_FIELDS = {"id", "name", "version", "entrypoint", "nodes", "edges", "validations"}
-NODE_FIELDS = {"type", "template", "next", "tool", "config", "policy", "contract", "artifacts"}
+TOP_LEVEL_FIELDS = {"id", "name", "version", "entrypoint", "nodes", "edges", "validations", "governance"}
+NODE_FIELDS = {"type", "template", "next", "tool", "config", "policy", "contract", "artifacts", "governance"}
 EDGE_FIELDS = {"from", "to"}
 SUPPORTED_NODE_TYPES = {"template", "react", "tool", "llm", "validation"}
 SUPPORTED_TOOL_ADAPTERS = {"python", "shell", "http"}
@@ -20,6 +20,7 @@ SUPPORTED_HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
 SUPPORTED_CONTRACT_TYPES = {"object", "array", "string", "integer", "number", "boolean", "null"}
 SUPPORTED_CONTRACT_STATUSES = {"passed", "failed"}
 SUPPORTED_RESUME_ACTIONS = {"run", "rerun", "skipped"}
+SUPPORTED_GOVERNANCE_STATUSES = {"within_limits", "timeout", "budget_exhausted", "aborted"}
 SUPPORTED_VALIDATION_TYPES = {
     "run_status",
     "node_completed",
@@ -29,6 +30,7 @@ SUPPORTED_VALIDATION_TYPES = {
     "node_contract",
     "node_resume_action",
     "node_artifact",
+    "node_governance",
 }
 SUPPORTED_ON_FAILURE = {"halt", "continue"}
 SUPPORTED_POLICY_OUTCOMES = {
@@ -70,6 +72,7 @@ class Workflow:
     nodes: list[WorkflowNode]
     edges: list[WorkflowEdge]
     validations: list[WorkflowValidation]
+    governance: dict[str, Any] = field(default_factory=dict)
     source_path: Path | None = None
     source_snapshot: str | None = None
 
@@ -90,6 +93,7 @@ def load_workflow_from_source(source: str, source_path: str | Path | None = None
     nodes = _load_nodes(raw.get("nodes"))
     edges = _load_edges(raw.get("edges"))
     validations = _load_validations(raw.get("validations"))
+    governance = _workflow_governance(raw.get("governance"))
     workflow_id = _optional_string(raw, "id", default="")
     resolved_source_path = Path(source_path) if source_path is not None else None
     return Workflow(
@@ -100,6 +104,7 @@ def load_workflow_from_source(source: str, source_path: str | Path | None = None
         nodes=nodes,
         edges=edges,
         validations=validations,
+        governance=governance,
         source_path=resolved_source_path,
         source_snapshot=source,
     )
@@ -127,8 +132,11 @@ def validate_workflow(workflow: Workflow) -> None:
         _validate_node_policy(node)
         _validate_node_contract(node)
         _validate_node_artifacts(node)
+        _validate_node_governance(node)
         if node.next and node.next not in node_ids:
             raise WorkflowValidationError(f"node {node.id!r} next target {node.next!r} is missing")
+
+    _validate_workflow_governance(workflow.governance)
 
     seen_edges: set[tuple[str, str]] = set()
     for edge in workflow.edges:
@@ -194,11 +202,21 @@ def _node_config(node_data: dict[str, Any]) -> dict[str, Any]:
         config["contract"] = node_data["contract"]
     if "artifacts" in node_data:
         config["artifacts"] = node_data["artifacts"]
+    if "governance" in node_data:
+        config["governance"] = node_data["governance"]
     if "config" in node_data:
         if not isinstance(node_data["config"], dict):
             raise WorkflowValidationError("node config must be a mapping")
         config["config"] = node_data["config"]
     return config
+
+
+def _workflow_governance(raw_governance: Any) -> dict[str, Any]:
+    if raw_governance is None:
+        return {}
+    if not isinstance(raw_governance, dict):
+        return {"__invalid__": raw_governance}
+    return dict(raw_governance)
 
 
 def _load_edges(raw_edges: Any) -> list[WorkflowEdge]:
@@ -362,12 +380,52 @@ def _validate_node_artifacts(node: WorkflowNode) -> None:
             raise WorkflowValidationError(f"{context} requires content_type")
 
 
+def _validate_workflow_governance(governance: dict[str, Any]) -> None:
+    if not governance:
+        return
+    if "__invalid__" in governance:
+        raise WorkflowValidationError("workflow governance must be a mapping")
+    _reject_unknown_fields(
+        governance,
+        {"max_node_executions", "default_node_timeout_ms"},
+        "workflow governance",
+    )
+    _validate_positive_int(
+        governance,
+        "max_node_executions",
+        "workflow governance max_node_executions",
+    )
+    _validate_positive_int(
+        governance,
+        "default_node_timeout_ms",
+        "workflow governance default_node_timeout_ms",
+    )
+
+
+def _validate_node_governance(node: WorkflowNode) -> None:
+    governance = node.config.get("governance")
+    if governance is None:
+        return
+    if not isinstance(governance, dict):
+        raise WorkflowValidationError(f"node {node.id!r} governance must be a mapping")
+    _reject_unknown_fields(governance, {"timeout_ms"}, f"node {node.id!r} governance")
+    _validate_positive_int(governance, "timeout_ms", f"node {node.id!r} governance timeout_ms")
+
+
 def _validate_timeout(config: dict[str, Any], context: str) -> None:
     if "timeout_seconds" not in config:
         return
     timeout = config["timeout_seconds"]
     if not isinstance(timeout, int) or timeout <= 0:
         raise WorkflowValidationError(f"{context} timeout_seconds must be a positive integer")
+
+
+def _validate_positive_int(config: dict[str, Any], key: str, context: str) -> None:
+    if key not in config:
+        return
+    value = config[key]
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise WorkflowValidationError(f"{context} must be a positive integer")
 
 
 def _validate_run_validation(index: int, validation: WorkflowValidation, node_ids: set[str]) -> None:
@@ -432,6 +490,18 @@ def _validate_run_validation(index: int, validation: WorkflowValidation, node_id
         exists = validation.config.get("exists")
         if exists is not None and not isinstance(exists, bool):
             raise WorkflowValidationError(f"{context} node_artifact exists must be a boolean")
+        return
+
+    if validation.type == "node_governance":
+        _reject_unknown_fields(validation.config, {"node", "equals"}, context)
+        _validate_validation_node_reference(context, validation, node_ids)
+        expected = validation.config.get("equals")
+        if not _is_non_empty_string(expected):
+            raise WorkflowValidationError(f"{context} node_governance requires equals")
+        if expected not in SUPPORTED_GOVERNANCE_STATUSES:
+            raise WorkflowValidationError(
+                f"{context} node_governance has unsupported equals {expected!r}"
+            )
         return
 
     _reject_unknown_fields(validation.config, {"node"}, context)

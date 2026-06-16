@@ -13,7 +13,12 @@ def build_run_report(run_id: str, store: RunStore | None = None) -> dict[str, An
         _node_report(index, events)
         for index, events in enumerate(_events_by_node(run.events), start=1)
     ]
-    failed_nodes = [node for node in timeline if node["status"] == "failed"]
+    failed_nodes = [
+        node
+        for node in timeline
+        if node["status"] == "failed"
+        or _governance_status(node.get("governance")) in ("timeout", "budget_exhausted", "aborted")
+    ]
     retry_events = [
         event
         for event in run.events
@@ -36,6 +41,9 @@ def build_run_report(run_id: str, store: RunStore | None = None) -> dict[str, An
     artifact_summary = _artifact_summary(timeline)
     if artifact_summary is not None:
         summary["artifacts"] = artifact_summary
+    governance_summary = _governance_summary(timeline)
+    if governance_summary is not None:
+        summary["governance"] = governance_summary
 
     return {
         "run_id": run.run_id,
@@ -94,6 +102,7 @@ def _node_report(index: int, events: list[NodeEvent]) -> dict[str, Any]:
         "contract": _contract_report(event),
         "resume": _resume_report(event),
         "artifacts": _artifact_report(event),
+        "governance": _governance_report(event),
     }
 
 
@@ -107,6 +116,9 @@ def _failure_report(node: dict[str, Any]) -> dict[str, str]:
     contract_status = _contract_status(node.get("contract"))
     if contract_status == "failed":
         failure["contract_status"] = contract_status
+    governance_status = _governance_status(node.get("governance"))
+    if governance_status in ("timeout", "budget_exhausted", "aborted"):
+        failure["governance_status"] = governance_status
     return failure
 
 
@@ -118,6 +130,7 @@ def _attempt_event_report(event: NodeEvent) -> dict[str, Any]:
         "policy_outcome": output.get("policy_outcome"),
         "contract_status": _contract_status(event.metadata.get("contract")),
         "resume_action": _resume_action(event.metadata.get("resume")),
+        "governance_status": _governance_status(event.metadata.get("governance")),
         "duration_ms": _duration_ms(output),
         "error": output.get("error"),
     }
@@ -174,6 +187,33 @@ def _resume_report(event: NodeEvent) -> dict[str, Any] | None:
 
 def _artifact_report(event: NodeEvent) -> list[dict[str, Any]]:
     return event_artifacts(event)
+
+
+def _governance_report(event: NodeEvent) -> dict[str, Any] | None:
+    governance = event.metadata.get("governance")
+    if not isinstance(governance, dict):
+        return None
+    return governance
+
+
+def _governance_summary(timeline: list[dict[str, Any]]) -> dict[str, int] | None:
+    counts = {"within_limits": 0, "timeout": 0, "budget_exhausted": 0, "aborted": 0, "skipped": 0}
+    saw_governance = False
+    for node in timeline:
+        governance_status = _governance_status(node.get("governance"))
+        if governance_status in ("within_limits", "timeout", "budget_exhausted", "aborted"):
+            counts[governance_status] += 1
+            saw_governance = True
+        if governance_status in ("budget_exhausted", "aborted") or node.get("status") == "skipped":
+            counts["skipped"] += 1
+    return counts if saw_governance else None
+
+
+def _governance_status(governance: Any) -> str | None:
+    if not isinstance(governance, dict):
+        return None
+    status = governance.get("status")
+    return status if isinstance(status, str) else None
 
 
 def _artifact_summary(timeline: list[dict[str, Any]]) -> dict[str, int] | None:

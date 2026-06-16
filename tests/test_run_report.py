@@ -442,3 +442,58 @@ validations:
             "sha256": hashlib.sha256(b"ABH artifact").hexdigest(),
         }
     ]
+
+
+def test_build_run_report_summarizes_governance_evidence(tmp_path):
+    workflow_path = tmp_path / "report_governance_workflow.yaml"
+    workflow_path.write_text(
+        """
+id: report-governance-workflow
+entrypoint: first
+governance:
+  max_node_executions: 1
+nodes:
+  first:
+    type: template
+    next: second
+    template: "First {topic}"
+  second:
+    type: template
+    template: "Second {first}"
+validations:
+  - type: run_status
+    equals: failed
+  - type: node_governance
+    node: second
+    equals: budget_exhausted
+""".strip(),
+        encoding="utf-8",
+    )
+    store = RunStore(tmp_path / "runs.sqlite")
+    workflow = load_workflow(workflow_path)
+    result = run_workflow(workflow, {"topic": "ABH"}, store=store)
+
+    report = build_run_report(result.run_id, store=store)
+
+    assert report["status"] == "failed"
+    assert report["summary"]["governance"] == {
+        "within_limits": 1,
+        "timeout": 0,
+        "budget_exhausted": 1,
+        "aborted": 0,
+        "skipped": 1,
+    }
+    assert report["failure"] == {
+        "node_id": "second",
+        "message": "workflow execution budget exhausted before node 'second'",
+        "governance_status": "budget_exhausted",
+    }
+    assert [node["node_id"] for node in report["timeline"]] == ["first", "second"]
+    assert report["timeline"][0]["governance"]["status"] == "within_limits"
+    assert report["timeline"][1]["status"] == "skipped"
+    assert report["timeline"][1]["governance"] == {
+        "status": "budget_exhausted",
+        "reason": "max_node_executions",
+        "max_node_executions": 1,
+        "executions_used": 1,
+    }

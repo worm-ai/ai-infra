@@ -346,6 +346,17 @@ def _evaluate_validation(validation_type: str, config: dict[str, Any], run: Stor
             status="passed",
             message=f"node {node_id!r} artifact {name!r} exists with sha256 {recorded_sha256}",
         )
+    if validation_type == "node_governance":
+        node_id = config.get("node")
+        expected = config.get("equals")
+        attempts = [event for event in run.events if event.node_id == node_id]
+        actual = _latest_governance_status(attempts)
+        passed = actual == expected
+        return VerificationCheck(
+            type=validation_type,
+            status="passed" if passed else "failed",
+            message=f"node {node_id!r} governance status is {actual!r}, expected {expected!r}",
+        )
     return VerificationCheck(type=validation_type, status="failed", message="unsupported validation type")
 
 
@@ -462,4 +473,15 @@ def _latest_resume_action(events: list[NodeEvent]) -> str | None:
         action = resume.get("action")
         if isinstance(action, str):
             return action
+    return None
+
+
+def _latest_governance_status(events: list[NodeEvent]) -> str | None:
+    for event in reversed(events):
+        governance = event.metadata.get("governance")
+        if not isinstance(governance, dict):
+            continue
+        status = governance.get("status")
+        if isinstance(status, str):
+            return status
     return None

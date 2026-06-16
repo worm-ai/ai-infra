@@ -456,3 +456,62 @@ def test_cli_example_artifact_workflow_uses_input_artifact_path(tmp_path):
 
     assert artifact["path"] == artifact_path.as_posix()
     assert artifact_path.read_text(encoding="utf-8") == "ABH artifact evidence"
+
+
+def test_cli_governance_report_and_verify(tmp_path):
+    workflow_path = tmp_path / "cli_governance_workflow.yaml"
+    input_path = tmp_path / "cli_governance_input.json"
+    workflow_path.write_text(
+        """
+id: cli-governance-workflow
+entrypoint: first
+governance:
+  max_node_executions: 1
+nodes:
+  first:
+    type: template
+    next: second
+    template: "First {topic}"
+  second:
+    type: template
+    template: "Second {first}"
+validations:
+  - type: run_status
+    equals: failed
+  - type: node_governance
+    node: first
+    equals: within_limits
+  - type: node_governance
+    node: second
+    equals: budget_exhausted
+""".strip(),
+        encoding="utf-8",
+    )
+    input_path.write_text(json.dumps({"topic": "ABH"}), encoding="utf-8")
+
+    validate = run_cli("validate", str(workflow_path), state_dir=tmp_path)
+    assert validate.returncode == 0
+
+    run = run_cli("run", str(workflow_path), "--input-file", str(input_path), state_dir=tmp_path)
+    assert run.returncode == 0
+    run_payload = json.loads(run.stdout)
+    run_id = run_payload["run"]["run_id"]
+    assert run_payload["run"]["status"] == "failed"
+
+    report = run_cli("report", run_id, state_dir=tmp_path)
+    assert report.returncode == 0
+    report_payload = json.loads(report.stdout)
+    assert report_payload["report"]["summary"]["governance"] == {
+        "within_limits": 1,
+        "timeout": 0,
+        "budget_exhausted": 1,
+        "aborted": 0,
+        "skipped": 1,
+    }
+    assert report_payload["report"]["timeline"][1]["governance"]["status"] == "budget_exhausted"
+
+    verify = run_cli("verify", run_id, state_dir=tmp_path)
+    assert verify.returncode == 0
+    checks = {check["message"] for check in json.loads(verify.stdout)["verification"]["checks"]}
+    assert "node 'first' governance status is 'within_limits', expected 'within_limits'" in checks
+    assert "node 'second' governance status is 'budget_exhausted', expected 'budget_exhausted'" in checks

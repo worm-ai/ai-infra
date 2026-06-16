@@ -1,0 +1,26 @@
+id: governance-workflow
+name: Governance Workflow
+version: "0.1"
+entrypoint: first
+governance:
+  max_node_executions: 1
+  default_node_timeout_ms: 5000
+nodes:
+  first:
+    type: template
+    next: second
+    template: "First {topic}"
+  second:
+    type: template
+    template: "Second {first}"
+validations:
+  - type: run_status
+    equals: failed
+  - type: node_completed
+    node: first
+  - type: node_governance
+    node: first
+    equals: within_limits
+  - type: node_governance
+    node: second
+    equals: budget_exhausted

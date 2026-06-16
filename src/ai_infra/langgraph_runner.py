@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import operator
+import time
 from typing import Annotated, Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -19,6 +20,8 @@ class WorkflowRunState(TypedDict, total=False):
     events: Annotated[list[NodeEvent], operator.add]
     status: Annotated[str, _merge_status]
     halted: Annotated[bool, _merge_halted]
+    governance_halted: Annotated[bool, _merge_halted]
+    governance: Annotated[dict[str, Any], _merge_governance]
     resume: dict[str, Any]
 
 
@@ -30,7 +33,7 @@ def compile_workflow(workflow: Workflow, store: RunStore | None = None) -> Any:
     predecessors = _predecessors(workflow)
 
     for node in workflow.nodes:
-        graph.add_node(node.id, _node_executor(node, store))
+        graph.add_node(node.id, _node_executor(node, workflow.governance, store))
 
     graph.add_edge(START, workflow.entrypoint)
     for node in workflow.nodes:
@@ -47,10 +50,24 @@ def compile_workflow(workflow: Workflow, store: RunStore | None = None) -> Any:
     return graph.compile()
 
 
-def _node_executor(node: WorkflowNode, store: RunStore | None):
+def _node_executor(node: WorkflowNode, workflow_governance: dict[str, Any], store: RunStore | None):
     def execute(state: WorkflowRunState) -> WorkflowRunState:
         if state.get("halted"):
-            return {"halted": True, "status": "failed"}
+            if not state.get("governance_halted"):
+                return {"halted": True, "status": "failed"}
+            inputs = dict(state.get("inputs") or {})
+            context = {**inputs, **dict(state.get("context") or {})}
+            run_id = str(state.get("run_id") or "")
+            event = _aborted_node_event(node, context, run_id)
+            if store is not None and event.run_id:
+                store.add_event(event)
+            return {
+                "events": [event],
+                "status": "failed",
+                "halted": True,
+                "governance_halted": True,
+                "governance": {"executions_used": 0},
+            }
 
         inputs = dict(state.get("inputs") or {})
         context = {**inputs, **dict(state.get("context") or {})}
@@ -59,14 +76,52 @@ def _node_executor(node: WorkflowNode, store: RunStore | None):
         resume_action = _resume_action(node.id, state)
         if resume_action == "skipped":
             return _skipped_node_state(node, state, context, run_id, store)
+        governance_state = _current_governance_state(state)
+        budget_event = _budget_exhausted_event(
+            node,
+            context,
+            run_id,
+            workflow_governance,
+            governance_state,
+            store,
+        )
+        if budget_event is not None:
+            if store is not None and budget_event.run_id:
+                store.add_event(budget_event)
+            return {
+                "events": [budget_event],
+                "status": "failed",
+                "halted": True,
+                "governance_halted": True,
+                "governance": {"executions_used": 0},
+            }
 
         events: list[NodeEvent] = []
         output: Any = None
         node_status = "failed"
         halted = False
+        executions_used = 0
+        governance_failure = False
 
         for attempt in range(1, policy["max_attempts"] + 1):
+            executions_used += 1
+            started = time.perf_counter()
             node_status, output = _execute_node(node, context)
+            duration_ms = int((time.perf_counter() - started) * 1000)
+            governance_evidence = _governance_evidence(
+                node,
+                workflow_governance,
+                node_status,
+                duration_ms,
+            )
+            governance_error = _governance_failure_message(node.id, governance_evidence)
+            governance_failure = governance_error is not None
+            if governance_error is not None:
+                node_status = "failed"
+                if not isinstance(output, dict):
+                    output = {"result": output}
+                output = dict(output)
+                output["error"] = governance_error
             contract_evidence = _evaluate_output_contract(node, output)
             contract_error: str | None = None
             if contract_evidence is not None:
@@ -90,6 +145,8 @@ def _node_executor(node: WorkflowNode, store: RunStore | None):
             final_attempt = attempt == policy["max_attempts"] or node_status == "completed"
             event_output = _event_output(output, attempt, policy, node_status)
             event_metadata: dict[str, Any] = {}
+            if _records_governance(node, workflow_governance):
+                event_metadata["governance"] = governance_evidence
             if contract_evidence is not None:
                 event_metadata["contract"] = {"output": contract_evidence}
             artifact_evidence = collect_node_artifacts(
@@ -134,9 +191,74 @@ def _node_executor(node: WorkflowNode, store: RunStore | None):
             "events": events,
             "status": "completed" if node_status == "failed" and not halted else node_status,
             "halted": halted,
+            "governance_halted": halted and governance_failure,
+            "governance": {"executions_used": executions_used},
         }
 
     return execute
+
+
+def _budget_exhausted_event(
+    node: WorkflowNode,
+    context: dict[str, Any],
+    run_id: str,
+    workflow_governance: dict[str, Any],
+    governance_state: dict[str, Any],
+    store: RunStore | None,
+) -> NodeEvent | None:
+    max_node_executions = workflow_governance.get("max_node_executions")
+    if not isinstance(max_node_executions, int):
+        return None
+    reserved, executions_used = _reserve_execution_budget(
+        node.id,
+        run_id,
+        max_node_executions,
+        governance_state,
+        store,
+    )
+    if reserved:
+        return None
+    error = f"workflow execution budget exhausted before node {node.id!r}"
+    output = {"error": error, "node_status": "skipped"}
+    return NodeEvent(
+        run_id=run_id,
+        node_id=node.id,
+        status="skipped",
+        input={**context, node.id: output},
+        output=output,
+        metadata={
+            "governance": {
+                "status": "budget_exhausted",
+                "reason": "max_node_executions",
+                "max_node_executions": max_node_executions,
+                "executions_used": executions_used,
+            }
+        },
+    )
+
+
+def _aborted_node_event(
+    node: WorkflowNode,
+    context: dict[str, Any],
+    run_id: str,
+) -> NodeEvent:
+    output = {
+        "error": f"workflow halted before node {node.id!r}",
+        "node_status": "skipped",
+    }
+    return NodeEvent(
+        run_id=run_id,
+        node_id=node.id,
+        status="skipped",
+        input={**context, node.id: output},
+        output=output,
+        metadata={
+            "governance": {
+                "status": "aborted",
+                "reason": "workflow_halted",
+            }
+        },
+    )
 
 
 def _skipped_node_state(
@@ -210,6 +332,47 @@ def _merge_halted(left: bool | None, right: bool | None) -> bool:
     return bool(left) or bool(right)
 
 
+def _merge_governance(left: dict[str, Any] | None, right: dict[str, Any] | None) -> dict[str, Any]:
+    left_used = _executions_used(left or {})
+    right_used = _executions_used(right or {})
+    return {"executions_used": left_used + right_used}
+
+
+def _current_governance_state(state: WorkflowRunState) -> dict[str, Any]:
+    raw_governance = state.get("governance")
+    return raw_governance if isinstance(raw_governance, dict) else {}
+
+
+def _executions_used(governance: dict[str, Any]) -> int:
+    value = governance.get("executions_used", 0)
+    return value if isinstance(value, int) else 0
+
+
+def _global_executions_used(
+    run_id: str,
+    governance_state: dict[str, Any],
+    store: RunStore | None,
+) -> int:
+    if store is not None and run_id:
+        return store.count_node_executions(run_id)
+    return _executions_used(governance_state)
+
+
+def _reserve_execution_budget(
+    node_id: str,
+    run_id: str,
+    max_node_executions: int,
+    governance_state: dict[str, Any],
+    store: RunStore | None,
+) -> tuple[bool, int]:
+    if store is not None and run_id:
+        return store.reserve_node_execution(run_id, node_id, max_node_executions)
+    executions_used = _executions_used(governance_state)
+    if executions_used >= max_node_executions:
+        return False, executions_used
+    return True, executions_used + 1
+
+
 def _execute_node(node: WorkflowNode, context: dict[str, Any]) -> tuple[str, Any]:
     if node.type == "template":
         if node.template is None:
@@ -236,6 +399,45 @@ def _node_policy(node: WorkflowNode) -> dict[str, int | str]:
 
 def _has_policy(node: WorkflowNode) -> bool:
     return isinstance(node.config.get("policy"), dict)
+
+
+def _records_governance(node: WorkflowNode, workflow_governance: dict[str, Any]) -> bool:
+    return bool(workflow_governance) or isinstance(node.config.get("governance"), dict)
+
+
+def _governance_evidence(
+    node: WorkflowNode,
+    workflow_governance: dict[str, Any],
+    node_status: str,
+    duration_ms: int,
+) -> dict[str, Any]:
+    timeout_ms = _node_timeout_ms(node, workflow_governance)
+    if timeout_ms is not None and duration_ms > timeout_ms:
+        return {
+            "status": "timeout",
+            "timeout_ms": timeout_ms,
+            "duration_ms": duration_ms,
+        }
+    return {
+        "status": "within_limits",
+        "timeout_ms": timeout_ms,
+        "duration_ms": duration_ms,
+        "node_status": node_status,
+    }
+
+
+def _node_timeout_ms(node: WorkflowNode, workflow_governance: dict[str, Any]) -> int | None:
+    node_governance = node.config.get("governance")
+    if isinstance(node_governance, dict) and isinstance(node_governance.get("timeout_ms"), int):
+        return int(node_governance["timeout_ms"])
+    default_timeout = workflow_governance.get("default_node_timeout_ms")
+    return int(default_timeout) if isinstance(default_timeout, int) else None
+
+
+def _governance_failure_message(node_id: str, evidence: dict[str, Any]) -> str | None:
+    if evidence.get("status") == "timeout":
+        return f"node {node_id!r} exceeded timeout budget"
+    return None
 
 
 def _attempt_output(

@@ -47,6 +47,7 @@ def _workflow_snapshot(workflow: Workflow) -> str:
                 {"from": edge.source, "to": edge.target}
                 for edge in workflow.edges
             ],
+            "governance": workflow.governance,
             "validations": [
                 {"type": validation.type, **validation.config}
                 for validation in workflow.validations

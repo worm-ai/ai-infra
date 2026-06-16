@@ -222,6 +222,157 @@ validations:
     assert workflow.validations[0].config == {"node": "writer", "name": "note", "exists": True}
 
 
+def test_load_workflow_accepts_governance_contract(tmp_path):
+    path = write_workflow(
+        tmp_path,
+        """
+id: governance-contract
+entrypoint: guarded
+governance:
+  max_node_executions: 3
+  default_node_timeout_ms: 1000
+nodes:
+  guarded:
+    type: template
+    governance:
+      timeout_ms: 500
+    template: "Govern {topic}"
+validations:
+  - type: node_governance
+    node: guarded
+    equals: within_limits
+""",
+    )
+
+    workflow = load_workflow(path)
+    validate_workflow(workflow)
+
+    assert workflow.governance == {
+        "max_node_executions": 3,
+        "default_node_timeout_ms": 1000,
+    }
+    assert workflow.node_map["guarded"].config["governance"] == {"timeout_ms": 500}
+    assert workflow.validations[0].type == "node_governance"
+    assert workflow.validations[0].config == {"node": "guarded", "equals": "within_limits"}
+
+
+def test_load_workflow_accepts_aborted_governance_validation(tmp_path):
+    path = write_workflow(
+        tmp_path,
+        """
+id: governance-aborted-contract
+entrypoint: first
+governance:
+  max_node_executions: 1
+nodes:
+  first:
+    type: template
+    next: second
+    template: "First"
+  second:
+    type: template
+    template: "Second"
+validations:
+  - type: node_governance
+    node: second
+    equals: aborted
+""",
+    )
+
+    workflow = load_workflow(path)
+    validate_workflow(workflow)
+
+    assert workflow.validations[0].config == {"node": "second", "equals": "aborted"}
+
+
+@pytest.mark.parametrize(
+    ("governance", "message"),
+    [
+        (
+            """
+- max_node_executions: 1
+""",
+            "workflow governance must be a mapping",
+        ),
+        (
+            """
+max_node_executions: 0
+""",
+            "workflow governance max_node_executions must be a positive integer",
+        ),
+        (
+            """
+default_node_timeout_ms: soon
+""",
+            "workflow governance default_node_timeout_ms must be a positive integer",
+        ),
+        (
+            """
+max_node_executions: 2
+remote_cancel: true
+""",
+            "workflow governance has unsupported field 'remote_cancel'",
+        ),
+    ],
+)
+def test_validate_workflow_rejects_invalid_workflow_governance(tmp_path, governance, message):
+    path = write_workflow(
+        tmp_path,
+        f"""
+id: bad-workflow-governance
+entrypoint: only
+governance:
+{_indent(governance, spaces=2)}
+nodes:
+  only:
+    type: template
+    template: "Hello"
+""",
+    )
+    workflow = load_workflow(path)
+
+    with pytest.raises(WorkflowValidationError, match=re.escape(message)):
+        validate_workflow(workflow)
+
+
+@pytest.mark.parametrize(
+    ("governance", "message"),
+    [
+        (
+            """
+timeout_ms: 0
+""",
+            "node 'guarded' governance timeout_ms must be a positive integer",
+        ),
+        (
+            """
+timeout_ms: 100
+cancel_service: external
+""",
+            "node 'guarded' governance has unsupported field 'cancel_service'",
+        ),
+    ],
+)
+def test_validate_workflow_rejects_invalid_node_governance(tmp_path, governance, message):
+    path = write_workflow(
+        tmp_path,
+        f"""
+id: bad-node-governance
+entrypoint: guarded
+nodes:
+  guarded:
+    type: template
+    governance:
+{_indent(governance, spaces=6)}
+    template: "Hello"
+""",
+    )
+    workflow = load_workflow(path)
+
+    with pytest.raises(WorkflowValidationError, match=re.escape(message)):
+        validate_workflow(workflow)
+
+
 @pytest.mark.parametrize(
     ("artifacts", "message"),
     [
@@ -520,6 +671,14 @@ nodes:
   exists: present
 """,
             "validation[0] node_artifact exists must be a boolean",
+        ),
+        (
+            """
+- type: node_governance
+  node: only
+  equals: remote_cancelled
+""",
+            "validation[0] node_governance has unsupported equals 'remote_cancelled'",
         ),
     ],
 )

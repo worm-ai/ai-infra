@@ -102,6 +102,11 @@ class RunStore:
                     status text not null,
                     checks_json text not null
                 );
+                create table if not exists node_execution_reservations (
+                    id integer primary key autoincrement,
+                    run_id text not null,
+                    node_id text not null
+                );
                 """
             )
             columns = {
@@ -183,6 +188,46 @@ class RunStore:
                     json.dumps(event.metadata, ensure_ascii=False),
                 ),
             )
+
+    def count_node_executions(self, run_id: str) -> int:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                select count(*) as count
+                from node_execution_reservations
+                where run_id = ?
+                """,
+                (run_id,),
+            ).fetchone()
+        return int(row["count"]) if row is not None else 0
+
+    def reserve_node_execution(
+        self,
+        run_id: str,
+        node_id: str,
+        max_node_executions: int,
+    ) -> tuple[bool, int]:
+        with self._connect() as connection:
+            connection.execute("begin immediate")
+            row = connection.execute(
+                """
+                select count(*) as count
+                from node_execution_reservations
+                where run_id = ?
+                """,
+                (run_id,),
+            ).fetchone()
+            executions_used = int(row["count"]) if row is not None else 0
+            if executions_used >= max_node_executions:
+                return False, executions_used
+            connection.execute(
+                """
+                insert into node_execution_reservations (run_id, node_id)
+                values (?, ?)
+                """,
+                (run_id, node_id),
+            )
+            return True, executions_used + 1
 
     def add_verification(self, run_id: str, status: str, checks: list[VerificationCheck]) -> StoredVerification:
         with self._connect() as connection:
