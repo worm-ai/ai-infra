@@ -8,7 +8,7 @@
 - Baseline: Plans 001-012 are closed with local YAML DAG execution, bounded tool nodes, structured reports, hardened schema validation, immutable provenance, retry/failure policies, output contracts, resumption, local artifact evidence, governance, maintenance, and a reserved MCP tool boundary. Verification currently supports named checks for run status and specific evidence families, but it lacks a compact field-level assertion DSL for persisted run evidence, so operators cannot declaratively verify arbitrary node output, metadata, tool invocation, or report summary fields without adding new validation types for each case.
 - Owner: engineering
 - Created: 2026-06-16T08:04:20.803088+00:00
-- Updated: 2026-06-16T08:58:01.680246+00:00
+- Updated: 2026-06-16T09:03:27.094511+00:00
 
 ## Goals
 
@@ -75,6 +75,7 @@
 - ver-1dde5df0cedb
 - ver-a98f6439ac72
 - ver-85deb8d30de9
+- ver-9b5fff912fa0
 
 ## Audits
 
