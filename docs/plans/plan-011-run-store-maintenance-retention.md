@@ -8,7 +8,7 @@
 - Baseline: Plans 001-010 are closed with local YAML DAG execution, bounded tool nodes, structured reports, hardened schema validation, immutable provenance, explicit failure policy/retry semantics, output contracts, run resumption, local artifact evidence bundles, and execution governance policies. The local SQLite run store and artifact/evidence files now need production-oriented health inspection, run listing, deterministic retention dry-run/apply, and orphan evidence detection so long-running local use remains auditable and operable.
 - Owner: engineering
 - Created: 2026-06-16T06:18:04.719933+00:00
-- Updated: 2026-06-16T06:49:20.396830+00:00
+- Updated: 2026-06-16T06:55:20.663614+00:00
 
 ## Goals
 
@@ -73,6 +73,8 @@
 - ver-0db6491bd95a
 - ver-6713d633d4d7
 - ver-f67461ee13b1
+- ver-871ca7118e5a
+- ver-d4b132c7497f
 
 ## Audits
 
