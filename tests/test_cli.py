@@ -79,6 +79,44 @@ def test_cli_report_summarizes_failed_tool_run(tmp_path):
     assert payload["report"]["failure"]["node_id"] == "failing_shell"
     assert "exit code 7" in payload["report"]["failure"]["message"]
     assert payload["report"]["timeline"][0]["tool"]["exit_code"] == 7
+    assert payload["report"]["timeline"][0]["tool"]["identity"].startswith("python -c")
+    assert payload["report"]["timeline"][0]["tool"]["status"] == "failed"
+
+
+def test_cli_mcp_reserved_tool_boundary_report_and_verify(tmp_path):
+    validate = run_cli("validate", "examples/mcp_reserved_workflow.yaml", state_dir=tmp_path)
+    assert validate.returncode == 0
+
+    run = run_cli(
+        "run",
+        "examples/mcp_reserved_workflow.yaml",
+        "--input-file",
+        "examples/mcp_reserved_input.json",
+        state_dir=tmp_path,
+    )
+    assert run.returncode == 0
+    run_payload = json.loads(run.stdout)
+    run_id = run_payload["run"]["run_id"]
+    assert run_payload["run"]["status"] == "failed"
+    assert run_payload["run"]["outputs"]["future_mcp_tool"]["tool_invocation"]["reserved"] is True
+
+    logs = run_cli("logs", run_id, state_dir=tmp_path)
+    assert logs.returncode == 0
+    [event] = json.loads(logs.stdout)["events"]
+    assert event["output"]["tool_invocation"]["adapter"] == "mcp"
+    assert event["output"]["tool_invocation"]["identity"] == "local-memory.echo"
+
+    report = run_cli("report", run_id, state_dir=tmp_path)
+    assert report.returncode == 0
+    report_payload = json.loads(report.stdout)
+    [node] = report_payload["report"]["timeline"]
+    assert node["tool"]["adapter"] == "mcp"
+    assert node["tool"]["reserved"] is True
+    assert node["tool"]["error"] == "mcp adapter is reserved and not implemented"
+
+    verify = run_cli("verify", run_id, state_dir=tmp_path)
+    assert verify.returncode == 0
+    assert json.loads(verify.stdout)["verification"]["status"] == "passed"
 
 
 def test_cli_verify_reports_workflow_source_drift(tmp_path):

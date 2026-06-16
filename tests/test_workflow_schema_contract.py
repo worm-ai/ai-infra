@@ -256,6 +256,40 @@ validations:
     assert workflow.validations[0].config == {"node": "guarded", "equals": "within_limits"}
 
 
+def test_load_workflow_accepts_reserved_mcp_tool_contract(tmp_path):
+    path = write_workflow(
+        tmp_path,
+        """
+id: mcp-reserved-contract
+entrypoint: future_mcp_tool
+nodes:
+  future_mcp_tool:
+    type: tool
+    tool:
+      adapter: mcp
+      server: local-memory
+      tool: echo
+      args:
+        topic: "{topic}"
+validations:
+  - type: run_status
+    equals: failed
+  - type: node_failed
+    node: future_mcp_tool
+""",
+    )
+
+    workflow = load_workflow(path)
+    validate_workflow(workflow)
+
+    assert workflow.node_map["future_mcp_tool"].config["tool"] == {
+        "adapter": "mcp",
+        "server": "local-memory",
+        "tool": "echo",
+        "args": {"topic": "{topic}"},
+    }
+
+
 def test_load_workflow_accepts_aborted_governance_validation(tmp_path):
     path = write_workflow(
         tmp_path,
@@ -576,9 +610,18 @@ url: "ftp://example.test"
         (
             """
 adapter: mcp
-name: future
+server: local-memory
 """,
-            "tool node 'tool_node' has unsupported adapter 'mcp'",
+            "mcp tool node 'tool_node' requires tool",
+        ),
+        (
+            """
+adapter: mcp
+server: local-memory
+tool: echo
+transport: stdio
+""",
+            "mcp tool node 'tool_node' has unsupported field 'transport'",
         ),
     ],
 )

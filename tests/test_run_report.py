@@ -45,8 +45,42 @@ def test_build_run_report_summarizes_successful_tool_run(tmp_path):
         "total_events": 3,
     }
     assert report["timeline"][0]["tool"]["adapter"] == "python"
+    assert report["timeline"][0]["tool"]["identity"] == "echo"
+    assert report["timeline"][0]["tool"]["status"] == "completed"
+    assert report["timeline"][0]["tool"]["reserved"] is False
+    assert report["timeline"][0]["tool"]["input"] == {"args": {"value": "ABH"}, "name": "echo"}
+    assert report["timeline"][0]["tool"]["output"] == {"result": "ABH"}
     assert report["timeline"][1]["tool"]["exit_code"] == 0
     assert report["timeline"][2]["tool"]["status_code"] == 200
+
+
+def test_build_run_report_summarizes_mcp_reserved_tool_boundary(tmp_path):
+    store = RunStore(tmp_path / "runs.sqlite")
+    workflow = load_workflow(Path("examples/mcp_reserved_workflow.yaml"))
+    result = run_workflow(workflow, {"topic": "ABH"}, store=store)
+
+    report = build_run_report(result.run_id, store=store)
+
+    assert report["status"] == "failed"
+    assert report["failure"] == {
+        "node_id": "future_mcp_tool",
+        "message": "mcp adapter is reserved and not implemented",
+    }
+    [node] = report["timeline"]
+    assert node["tool"] == {
+        "adapter": "mcp",
+        "identity": "local-memory.echo",
+        "input": {
+            "server": "local-memory",
+            "tool": "echo",
+            "args": {"topic": "ABH"},
+        },
+        "output": None,
+        "error": "mcp adapter is reserved and not implemented",
+        "status": "failed",
+        "duration_ms": node["duration_ms"],
+        "reserved": True,
+    }
 
 
 def test_build_run_report_includes_snapshot_after_workflow_source_mutates(tmp_path):

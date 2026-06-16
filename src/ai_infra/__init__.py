@@ -18,7 +18,15 @@ from .runtime import (
     validate_run,
     validate_stored_run,
 )
-from .tools import ToolExecution, ToolRegistry, default_tool_registry, execute_tool
+from .tools import (
+    ToolExecution,
+    ToolInvocation,
+    ToolInvocationEvidence,
+    ToolRegistry,
+    build_tool_invocation,
+    default_tool_registry,
+    execute_tool,
+)
 
 __all__ = [
     "DagWorkflow",
@@ -28,12 +36,15 @@ __all__ = [
     "RunResult",
     "SuperAgent",
     "ToolExecution",
+    "ToolInvocation",
+    "ToolInvocationEvidence",
     "ToolRegistry",
     "VerificationResult",
     "Workflow",
     "WorkflowValidationError",
     "apply_retention_cleanup",
     "build_run_report",
+    "build_tool_invocation",
     "default_tool_registry",
     "execute_tool",
     "export_evidence_bundle",

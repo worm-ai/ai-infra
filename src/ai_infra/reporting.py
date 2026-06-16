@@ -155,6 +155,22 @@ def _duration_ms(output: Any) -> int | None:
 def _tool_report(output: Any) -> dict[str, Any] | None:
     if not isinstance(output, dict) or "adapter" not in output:
         return None
+    invocation = output.get("tool_invocation")
+    if isinstance(invocation, dict):
+        report = dict(invocation)
+        for key in [
+            "name",
+            "command",
+            "method",
+            "url",
+            "status_code",
+            "exit_code",
+            "stdout",
+            "stderr",
+        ]:
+            if key in output and key not in report:
+                report[key] = output[key]
+        return report
     keys = [
         "adapter",
         "name",

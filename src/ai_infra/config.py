@@ -15,7 +15,7 @@ TOP_LEVEL_FIELDS = {"id", "name", "version", "entrypoint", "nodes", "edges", "va
 NODE_FIELDS = {"type", "template", "next", "tool", "config", "policy", "contract", "artifacts", "governance"}
 EDGE_FIELDS = {"from", "to"}
 SUPPORTED_NODE_TYPES = {"template", "react", "tool", "llm", "validation"}
-SUPPORTED_TOOL_ADAPTERS = {"python", "shell", "http"}
+SUPPORTED_TOOL_ADAPTERS = {"python", "shell", "http", "mcp"}
 SUPPORTED_HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
 SUPPORTED_CONTRACT_TYPES = {"object", "array", "string", "integer", "number", "boolean", "null"}
 SUPPORTED_CONTRACT_STATUSES = {"passed", "failed"}
@@ -282,6 +282,16 @@ def _validate_tool_node(node: WorkflowNode) -> None:
         if not _is_non_empty_string(tool_config.get("command")):
             raise WorkflowValidationError(f"shell tool node {node.id!r} requires non-empty command")
         _validate_timeout(tool_config, f"shell tool node {node.id!r}")
+        return
+
+    if adapter == "mcp":
+        _reject_unknown_fields(tool_config, {"adapter", "server", "tool", "args"}, f"mcp tool node {node.id!r}")
+        if not _is_non_empty_string(tool_config.get("server")):
+            raise WorkflowValidationError(f"mcp tool node {node.id!r} requires server")
+        if not _is_non_empty_string(tool_config.get("tool")):
+            raise WorkflowValidationError(f"mcp tool node {node.id!r} requires tool")
+        if "args" in tool_config and not isinstance(tool_config["args"], dict):
+            raise WorkflowValidationError(f"mcp tool node {node.id!r} args must be a mapping")
         return
 
     _reject_unknown_fields(tool_config, {"adapter", "method", "url", "json", "timeout_seconds"}, f"http tool node {node.id!r}")

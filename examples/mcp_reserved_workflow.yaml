@@ -1,0 +1,18 @@
+id: mcp-reserved-workflow
+name: MCP Reserved Workflow
+version: "0.12"
+entrypoint: future_mcp_tool
+nodes:
+  future_mcp_tool:
+    type: tool
+    tool:
+      adapter: mcp
+      server: local-memory
+      tool: echo
+      args:
+        topic: "{topic}"
+validations:
+  - type: run_status
+    equals: failed
+  - type: node_failed
+    node: future_mcp_tool
