@@ -12,6 +12,7 @@ from ai_infra import (
 )
 from ai_infra.config import Workflow, WorkflowNode, WorkflowValidation
 from ai_infra.store import RunStore
+from ai_infra.tools import default_tool_registry
 
 
 def _sha256_text(value):
@@ -258,3 +259,170 @@ validations:
 
     saved = get_run(result.run_id, store=store)
     assert saved.verifications[-1].checks[0].type == "workflow_source_integrity"
+
+
+def test_run_workflow_retries_failed_node_and_persists_attempt_evidence(tmp_path):
+    attempts = {"count": 0}
+
+    def flaky_tool(args):
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            raise RuntimeError("temporary outage")
+        return f"ok:{args['value']}"
+
+    default_tool_registry.register_python("flaky_once", flaky_tool)
+    workflow_path = tmp_path / "retry_workflow.yaml"
+    workflow_path.write_text(
+        """
+id: retry-workflow
+entrypoint: flaky
+nodes:
+  flaky:
+    type: tool
+    policy:
+      on_failure: halt
+      max_attempts: 2
+    tool:
+      adapter: python
+      name: flaky_once
+      args:
+        value: "{topic}"
+validations:
+  - type: run_status
+    equals: completed
+  - type: node_completed
+    node: flaky
+  - type: node_attempts
+    node: flaky
+    equals: 2
+  - type: node_policy_outcome
+    node: flaky
+    equals: retry_succeeded
+""".strip(),
+        encoding="utf-8",
+    )
+    store = RunStore(tmp_path / "runs.sqlite")
+    workflow = load_workflow(workflow_path)
+
+    result = run_workflow(workflow, {"topic": "ABH"}, store=store)
+    verification = validate_stored_run(result.run_id, store=store)
+
+    assert result.status == "completed"
+    assert result.outputs["flaky"]["result"] == "ok:ABH"
+    saved = get_run(result.run_id, store=store)
+    [failed_attempt, completed_attempt] = saved.events
+    assert failed_attempt.node_id == "flaky"
+    assert failed_attempt.status == "failed"
+    assert failed_attempt.output["attempt"] == 1
+    assert failed_attempt.output["max_attempts"] == 2
+    assert failed_attempt.output["policy_outcome"] == "retrying"
+    assert "temporary outage" in failed_attempt.output["error"]
+    assert completed_attempt.status == "completed"
+    assert completed_attempt.output["attempt"] == 2
+    assert completed_attempt.output["attempts"] == 2
+    assert completed_attempt.output["policy_outcome"] == "retry_succeeded"
+    assert verification.status == "passed"
+
+
+def test_run_workflow_records_retry_exhausted_and_halts_downstream_nodes(tmp_path):
+    def always_fails(args):
+        raise RuntimeError(f"permanent outage for {args['value']}")
+
+    default_tool_registry.register_python("always_fails", always_fails)
+    workflow_path = tmp_path / "retry_exhausted_workflow.yaml"
+    workflow_path.write_text(
+        """
+id: retry-exhausted-workflow
+entrypoint: flaky
+nodes:
+  flaky:
+    type: tool
+    next: downstream
+    policy:
+      on_failure: halt
+      max_attempts: 2
+    tool:
+      adapter: python
+      name: always_fails
+      args:
+        value: "{topic}"
+  downstream:
+    type: template
+    template: "Should not execute {flaky.result}"
+validations:
+  - type: run_status
+    equals: failed
+  - type: node_failed
+    node: flaky
+  - type: node_attempts
+    node: flaky
+    equals: 2
+  - type: node_policy_outcome
+    node: flaky
+    equals: retry_exhausted
+""".strip(),
+        encoding="utf-8",
+    )
+    store = RunStore(tmp_path / "runs.sqlite")
+    workflow = load_workflow(workflow_path)
+
+    result = run_workflow(workflow, {"topic": "ABH"}, store=store)
+    verification = validate_stored_run(result.run_id, store=store)
+
+    assert result.status == "failed"
+    assert "downstream" not in result.outputs
+    saved = get_run(result.run_id, store=store)
+    assert [event.node_id for event in saved.events] == ["flaky", "flaky"]
+    assert [event.output["attempt"] for event in saved.events] == [1, 2]
+    assert saved.events[-1].output["policy_outcome"] == "retry_exhausted"
+    assert verification.status == "passed"
+
+
+def test_run_workflow_can_continue_after_retry_exhaustion_when_policy_allows(tmp_path):
+    def always_fails(args):
+        raise RuntimeError("non-blocking failure")
+
+    default_tool_registry.register_python("non_blocking_failure", always_fails)
+    workflow_path = tmp_path / "continue_workflow.yaml"
+    workflow_path.write_text(
+        """
+id: continue-workflow
+entrypoint: optional
+nodes:
+  optional:
+    type: tool
+    next: downstream
+    policy:
+      on_failure: continue
+      max_attempts: 2
+    tool:
+      adapter: python
+      name: non_blocking_failure
+  downstream:
+    type: template
+    template: "Continued after {optional.error}"
+validations:
+  - type: run_status
+    equals: completed
+  - type: node_failed
+    node: optional
+  - type: node_completed
+    node: downstream
+  - type: node_policy_outcome
+    node: optional
+    equals: continued_after_failure
+""".strip(),
+        encoding="utf-8",
+    )
+    store = RunStore(tmp_path / "runs.sqlite")
+    workflow = load_workflow(workflow_path)
+
+    result = run_workflow(workflow, {"topic": "ABH"}, store=store)
+    verification = validate_stored_run(result.run_id, store=store)
+
+    assert result.status == "completed"
+    assert result.outputs["downstream"] == "Continued after non-blocking failure"
+    saved = get_run(result.run_id, store=store)
+    assert [event.node_id for event in saved.events] == ["optional", "optional", "downstream"]
+    assert saved.events[-2].output["policy_outcome"] == "continued_after_failure"
+    assert verification.status == "passed"

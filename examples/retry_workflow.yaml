@@ -1,0 +1,26 @@
+id: retry-workflow
+name: Retry Workflow
+version: "0.1"
+entrypoint: flaky_python
+nodes:
+  flaky_python:
+    type: tool
+    policy:
+      on_failure: halt
+      max_attempts: 2
+    tool:
+      adapter: python
+      name: flaky_once
+      args:
+        value: "{topic}"
+validations:
+  - type: run_status
+    equals: completed
+  - type: node_completed
+    node: flaky_python
+  - type: node_attempts
+    node: flaky_python
+    equals: 2
+  - type: node_policy_outcome
+    node: flaky_python
+    equals: retry_succeeded

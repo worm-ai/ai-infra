@@ -194,4 +194,37 @@ def _evaluate_validation(validation_type: str, config: dict[str, Any], run: Stor
             status="passed" if passed else "failed",
             message=f"node {node_id!r} failed" if passed else f"node {node_id!r} did not fail",
         )
+    if validation_type == "node_attempts":
+        node_id = config.get("node")
+        expected = config.get("equals")
+        attempts = [event for event in run.events if event.node_id == node_id]
+        actual = len(attempts)
+        passed = actual == expected
+        return VerificationCheck(
+            type=validation_type,
+            status="passed" if passed else "failed",
+            message=f"node {node_id!r} attempts is {actual}, expected {expected!r}",
+        )
+    if validation_type == "node_policy_outcome":
+        node_id = config.get("node")
+        expected = config.get("equals")
+        attempts = [event for event in run.events if event.node_id == node_id]
+        actual = _latest_policy_outcome(attempts)
+        passed = actual == expected
+        return VerificationCheck(
+            type=validation_type,
+            status="passed" if passed else "failed",
+            message=f"node {node_id!r} policy outcome is {actual!r}, expected {expected!r}",
+        )
     return VerificationCheck(type=validation_type, status="failed", message="unsupported validation type")
+
+
+def _latest_policy_outcome(events: list[NodeEvent]) -> str | None:
+    if not events:
+        return None
+    output = events[-1].output
+    if isinstance(output, dict):
+        outcome = output.get("policy_outcome")
+        if isinstance(outcome, str):
+            return outcome
+    return None

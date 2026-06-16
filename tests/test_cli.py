@@ -43,7 +43,13 @@ def test_cli_validate_run_status_logs_and_verify(tmp_path):
     report_payload = json.loads(report.stdout)
     assert report_payload["ok"] is True
     assert report_payload["report"]["run_id"] == run_id
-    assert report_payload["report"]["summary"] == {"completed": 2, "failed": 0, "total_nodes": 2}
+    assert report_payload["report"]["summary"] == {
+        "completed": 2,
+        "failed": 0,
+        "retried": 0,
+        "total_nodes": 2,
+        "total_events": 2,
+    }
     assert report_payload["report"]["provenance"]["workflow_sha256"]
     assert report_payload["report"]["provenance"]["inputs_sha256"]
 
@@ -151,3 +157,61 @@ nodes:
     assert payload["ok"] is False
     assert payload["error"] == "shell tool node 'tool_node' requires non-empty command"
     assert validate.stderr == ""
+
+
+def test_cli_retry_policy_report_and_verify(tmp_path):
+    validate = run_cli("validate", "examples/retry_workflow.yaml", state_dir=tmp_path)
+    assert validate.returncode == 0
+
+    run = run_cli(
+        "run",
+        "examples/retry_workflow.yaml",
+        "--input-file",
+        "examples/retry_input.json",
+        state_dir=tmp_path,
+    )
+    assert run.returncode == 0
+    run_payload = json.loads(run.stdout)
+    run_id = run_payload["run"]["run_id"]
+    assert run_payload["run"]["status"] == "completed"
+
+    report = run_cli("report", run_id, state_dir=tmp_path)
+    assert report.returncode == 0
+    report_payload = json.loads(report.stdout)
+    assert report_payload["report"]["summary"]["retried"] == 1
+    [node] = report_payload["report"]["timeline"]
+    assert node["node_id"] == "flaky_python"
+    assert node["attempts"] == 2
+    assert node["policy"]["outcome"] == "retry_succeeded"
+
+    verify = run_cli("verify", run_id, state_dir=tmp_path)
+    assert verify.returncode == 0
+    checks = {check["type"]: check for check in json.loads(verify.stdout)["verification"]["checks"]}
+    assert checks["node_attempts"]["status"] == "passed"
+    assert checks["node_policy_outcome"]["status"] == "passed"
+
+
+def test_cli_retry_exhausted_policy_report_and_verify(tmp_path):
+    validate = run_cli("validate", "examples/retry_exhausted_workflow.yaml", state_dir=tmp_path)
+    assert validate.returncode == 0
+
+    run = run_cli(
+        "run",
+        "examples/retry_exhausted_workflow.yaml",
+        "--input-file",
+        "examples/retry_input.json",
+        state_dir=tmp_path,
+    )
+    assert run.returncode == 0
+    run_id = json.loads(run.stdout)["run"]["run_id"]
+
+    report = run_cli("report", run_id, state_dir=tmp_path)
+    assert report.returncode == 0
+    report_payload = json.loads(report.stdout)
+    assert report_payload["report"]["status"] == "failed"
+    assert report_payload["report"]["failure"]["policy_outcome"] == "retry_exhausted"
+    assert report_payload["report"]["timeline"][0]["attempts"] == 2
+
+    verify = run_cli("verify", run_id, state_dir=tmp_path)
+    assert verify.returncode == 0
+    assert json.loads(verify.stdout)["verification"]["status"] == "passed"

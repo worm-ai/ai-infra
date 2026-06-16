@@ -2,6 +2,7 @@ from pathlib import Path
 
 from ai_infra import build_run_report, load_workflow, run_workflow
 from ai_infra.store import RunStore
+from ai_infra.tools import default_tool_registry
 
 
 def test_build_run_report_summarizes_successful_tool_run(tmp_path):
@@ -35,7 +36,13 @@ def test_build_run_report_summarizes_successful_tool_run(tmp_path):
         "shell_echo",
         "http_echo",
     ]
-    assert report["summary"] == {"completed": 3, "failed": 0, "total_nodes": 3}
+    assert report["summary"] == {
+        "completed": 3,
+        "failed": 0,
+        "retried": 0,
+        "total_nodes": 3,
+        "total_events": 3,
+    }
     assert report["timeline"][0]["tool"]["adapter"] == "python"
     assert report["timeline"][1]["tool"]["exit_code"] == 0
     assert report["timeline"][2]["tool"]["status_code"] == 200
@@ -87,7 +94,13 @@ def test_build_run_report_identifies_failed_tool_evidence(tmp_path):
     report = build_run_report(result.run_id, store=store)
 
     assert report["status"] == "failed"
-    assert report["summary"] == {"completed": 0, "failed": 1, "total_nodes": 1}
+    assert report["summary"] == {
+        "completed": 0,
+        "failed": 1,
+        "retried": 0,
+        "total_nodes": 1,
+        "total_events": 1,
+    }
     assert report["failure"] == {
         "node_id": "failing_shell",
         "message": "shell tool exited with exit code 7",
@@ -101,3 +114,104 @@ def test_build_run_report_identifies_failed_tool_evidence(tmp_path):
     assert node["tool"]["stdout"].strip() == "expected failure"
     assert node["tool"]["stderr"] == ""
     assert "exit code 7" in node["tool"]["error"]
+
+
+def test_build_run_report_summarizes_retry_policy_evidence(tmp_path):
+    attempts = {"count": 0}
+
+    def flaky_tool(args):
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            raise RuntimeError("temporary outage")
+        return "recovered"
+
+    default_tool_registry.register_python("report_flaky_once", flaky_tool)
+    workflow_path = tmp_path / "report_retry_workflow.yaml"
+    workflow_path.write_text(
+        """
+id: report-retry-workflow
+entrypoint: flaky
+nodes:
+  flaky:
+    type: tool
+    policy:
+      on_failure: halt
+      max_attempts: 2
+    tool:
+      adapter: python
+      name: report_flaky_once
+validations:
+  - type: run_status
+    equals: completed
+""".strip(),
+        encoding="utf-8",
+    )
+    store = RunStore(tmp_path / "runs.sqlite")
+    workflow = load_workflow(workflow_path)
+    result = run_workflow(workflow, {"topic": "ABH"}, store=store)
+
+    report = build_run_report(result.run_id, store=store)
+
+    assert report["status"] == "completed"
+    assert report["summary"] == {
+        "completed": 1,
+        "failed": 0,
+        "retried": 1,
+        "total_nodes": 1,
+        "total_events": 2,
+    }
+    assert report["failure"] is None
+    [node] = report["timeline"]
+    assert node["node_id"] == "flaky"
+    assert node["status"] == "completed"
+    assert node["attempts"] == 2
+    assert node["policy"]["on_failure"] == "halt"
+    assert node["policy"]["max_attempts"] == 2
+    assert node["policy"]["outcome"] == "retry_succeeded"
+    assert node["attempt_events"][0]["status"] == "failed"
+    assert node["attempt_events"][0]["policy_outcome"] == "retrying"
+    assert node["attempt_events"][1]["status"] == "completed"
+    assert node["attempt_events"][1]["policy_outcome"] == "retry_succeeded"
+
+
+def test_build_run_report_identifies_retry_exhausted_failure(tmp_path):
+    def always_fails(args):
+        raise RuntimeError("still down")
+
+    default_tool_registry.register_python("report_always_fails", always_fails)
+    workflow_path = tmp_path / "report_retry_exhausted_workflow.yaml"
+    workflow_path.write_text(
+        """
+id: report-retry-exhausted-workflow
+entrypoint: flaky
+nodes:
+  flaky:
+    type: tool
+    policy:
+      on_failure: halt
+      max_attempts: 2
+    tool:
+      adapter: python
+      name: report_always_fails
+validations:
+  - type: run_status
+    equals: failed
+""".strip(),
+        encoding="utf-8",
+    )
+    store = RunStore(tmp_path / "runs.sqlite")
+    workflow = load_workflow(workflow_path)
+    result = run_workflow(workflow, {"topic": "ABH"}, store=store)
+
+    report = build_run_report(result.run_id, store=store)
+
+    assert report["status"] == "failed"
+    assert report["summary"]["retried"] == 1
+    assert report["failure"] == {
+        "node_id": "flaky",
+        "message": "still down",
+        "policy_outcome": "retry_exhausted",
+    }
+    [node] = report["timeline"]
+    assert node["attempts"] == 2
+    assert node["policy"]["outcome"] == "retry_exhausted"

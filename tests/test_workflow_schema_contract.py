@@ -92,6 +92,81 @@ def test_load_workflow_rejects_invalid_yaml_contract(tmp_path, content, message)
         load_workflow(path)
 
 
+def test_load_workflow_accepts_node_failure_policy_contract(tmp_path):
+    path = write_workflow(
+        tmp_path,
+        """
+id: retry-contract
+entrypoint: flaky
+nodes:
+  flaky:
+    type: tool
+    policy:
+      on_failure: halt
+      max_attempts: 2
+    tool:
+      adapter: shell
+      command: "python -c 'print(1)'"
+""",
+    )
+
+    workflow = load_workflow(path)
+    validate_workflow(workflow)
+
+    assert workflow.node_map["flaky"].config["policy"] == {
+        "on_failure": "halt",
+        "max_attempts": 2,
+    }
+
+
+@pytest.mark.parametrize(
+    ("policy", "message"),
+    [
+        (
+            """
+on_failure: skip
+max_attempts: 2
+""",
+            "node 'flaky' policy on_failure must be one of",
+        ),
+        (
+            """
+on_failure: halt
+max_attempts: 0
+""",
+            "node 'flaky' policy max_attempts must be an integer between 1 and 10",
+        ),
+        (
+            """
+on_failure: continue
+max_attempts: 11
+""",
+            "node 'flaky' policy max_attempts must be an integer between 1 and 10",
+        ),
+    ],
+)
+def test_validate_workflow_rejects_invalid_failure_policy_contract(tmp_path, policy, message):
+    path = write_workflow(
+        tmp_path,
+        f"""
+id: bad-policy
+entrypoint: flaky
+nodes:
+  flaky:
+    type: tool
+    policy:
+{_indent(policy, spaces=6)}
+    tool:
+      adapter: shell
+      command: "python -c 'print(1)'"
+""",
+    )
+    workflow = load_workflow(path)
+
+    with pytest.raises(WorkflowValidationError, match=re.escape(message)):
+        validate_workflow(workflow)
+
+
 @pytest.mark.parametrize(
     ("tool", "message"),
     [
@@ -169,6 +244,21 @@ nodes:
   extra: nope
 """,
             "validation[0] has unsupported field 'extra'",
+        ),
+        (
+            """
+- type: node_attempts
+  node: only
+""",
+            "validation[0] node_attempts requires equals",
+        ),
+        (
+            """
+- type: node_policy_outcome
+  node: only
+  equals: unknown
+""",
+            "validation[0] node_policy_outcome has unsupported equals 'unknown'",
         ),
     ],
 )

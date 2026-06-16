@@ -22,7 +22,12 @@ ToolCallable = Callable[[dict[str, Any]], Any]
 
 class ToolRegistry:
     def __init__(self) -> None:
-        self._python_tools: dict[str, ToolCallable] = {"echo": _echo_tool}
+        self._flaky_attempts: dict[str, int] = {}
+        self._python_tools: dict[str, ToolCallable] = {
+            "echo": _echo_tool,
+            "flaky_once": self._flaky_once_tool,
+            "always_fails": _always_fails_tool,
+        }
 
     def register_python(self, name: str, tool: ToolCallable) -> None:
         self._python_tools[name] = tool
@@ -110,6 +115,14 @@ class ToolRegistry:
         except urllib.error.HTTPError as exc:
             raise RuntimeError(f"http tool returned status {exc.code}") from exc
 
+    def _flaky_once_tool(self, args: dict[str, Any]) -> Any:
+        key = json.dumps(args, ensure_ascii=False, sort_keys=True)
+        attempt = self._flaky_attempts.get(key, 0) + 1
+        self._flaky_attempts[key] = attempt
+        if attempt == 1:
+            raise RuntimeError("temporary outage")
+        return args.get("value")
+
 
 class ToolFailure(RuntimeError):
     def __init__(self, output: dict[str, Any]) -> None:
@@ -119,6 +132,10 @@ class ToolFailure(RuntimeError):
 
 def _echo_tool(args: dict[str, Any]) -> Any:
     return args.get("value")
+
+
+def _always_fails_tool(args: dict[str, Any]) -> Any:
+    raise RuntimeError(f"permanent outage for {args.get('value')}")
 
 
 def _render_value(value: Any, context: dict[str, Any]) -> Any:

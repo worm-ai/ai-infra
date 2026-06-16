@@ -12,12 +12,25 @@ class WorkflowValidationError(ValueError):
 
 
 TOP_LEVEL_FIELDS = {"id", "name", "version", "entrypoint", "nodes", "edges", "validations"}
-NODE_FIELDS = {"type", "template", "next", "tool", "config"}
+NODE_FIELDS = {"type", "template", "next", "tool", "config", "policy"}
 EDGE_FIELDS = {"from", "to"}
 SUPPORTED_NODE_TYPES = {"template", "react", "tool", "llm", "validation"}
 SUPPORTED_TOOL_ADAPTERS = {"python", "shell", "http"}
 SUPPORTED_HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
-SUPPORTED_VALIDATION_TYPES = {"run_status", "node_completed", "node_failed"}
+SUPPORTED_VALIDATION_TYPES = {
+    "run_status",
+    "node_completed",
+    "node_failed",
+    "node_attempts",
+    "node_policy_outcome",
+}
+SUPPORTED_ON_FAILURE = {"halt", "continue"}
+SUPPORTED_POLICY_OUTCOMES = {
+    "completed",
+    "retry_succeeded",
+    "retry_exhausted",
+    "continued_after_failure",
+}
 RUN_STATUSES = {"completed", "failed", "running"}
 
 
@@ -105,6 +118,7 @@ def validate_workflow(workflow: Workflow) -> None:
             raise WorkflowValidationError(f"template node {node.id!r} requires template")
         if node.type == "tool":
             _validate_tool_node(node)
+        _validate_node_policy(node)
         if node.next and node.next not in node_ids:
             raise WorkflowValidationError(f"node {node.id!r} next target {node.next!r} is missing")
 
@@ -166,6 +180,8 @@ def _node_config(node_data: dict[str, Any]) -> dict[str, Any]:
     config: dict[str, Any] = {}
     if "tool" in node_data:
         config["tool"] = node_data["tool"]
+    if "policy" in node_data:
+        config["policy"] = node_data["policy"]
     if "config" in node_data:
         if not isinstance(node_data["config"], dict):
             raise WorkflowValidationError("node config must be a mapping")
@@ -250,6 +266,24 @@ def _validate_tool_node(node: WorkflowNode) -> None:
     _validate_timeout(tool_config, f"http tool node {node.id!r}")
 
 
+def _validate_node_policy(node: WorkflowNode) -> None:
+    policy = node.config.get("policy")
+    if policy is None:
+        return
+    if not isinstance(policy, dict):
+        raise WorkflowValidationError(f"node {node.id!r} policy must be a mapping")
+    _reject_unknown_fields(policy, {"on_failure", "max_attempts"}, f"node {node.id!r} policy")
+    on_failure = policy.get("on_failure", "halt")
+    if on_failure not in SUPPORTED_ON_FAILURE:
+        allowed = ", ".join(sorted(SUPPORTED_ON_FAILURE))
+        raise WorkflowValidationError(f"node {node.id!r} policy on_failure must be one of {allowed}")
+    max_attempts = policy.get("max_attempts", 1)
+    if not isinstance(max_attempts, int) or max_attempts < 1 or max_attempts > 10:
+        raise WorkflowValidationError(
+            f"node {node.id!r} policy max_attempts must be an integer between 1 and 10"
+        )
+
+
 def _validate_timeout(config: dict[str, Any], context: str) -> None:
     if "timeout_seconds" not in config:
         return
@@ -272,7 +306,35 @@ def _validate_run_validation(index: int, validation: WorkflowValidation, node_id
             raise WorkflowValidationError(f"{context} run_status has unsupported equals {expected!r}")
         return
 
+    if validation.type == "node_attempts":
+        _reject_unknown_fields(validation.config, {"node", "equals"}, context)
+        _validate_validation_node_reference(context, validation, node_ids)
+        expected = validation.config.get("equals")
+        if not isinstance(expected, int) or expected < 1:
+            raise WorkflowValidationError(f"{context} node_attempts requires equals")
+        return
+
+    if validation.type == "node_policy_outcome":
+        _reject_unknown_fields(validation.config, {"node", "equals"}, context)
+        _validate_validation_node_reference(context, validation, node_ids)
+        expected = validation.config.get("equals")
+        if not _is_non_empty_string(expected):
+            raise WorkflowValidationError(f"{context} node_policy_outcome requires equals")
+        if expected not in SUPPORTED_POLICY_OUTCOMES:
+            raise WorkflowValidationError(
+                f"{context} node_policy_outcome has unsupported equals {expected!r}"
+            )
+        return
+
     _reject_unknown_fields(validation.config, {"node"}, context)
+    _validate_validation_node_reference(context, validation, node_ids)
+
+
+def _validate_validation_node_reference(
+    context: str,
+    validation: WorkflowValidation,
+    node_ids: set[str],
+) -> None:
     node_id = validation.config.get("node")
     if not _is_non_empty_string(node_id):
         raise WorkflowValidationError(f"{context} {validation.type} requires node")

@@ -1,0 +1,26 @@
+id: retry-exhausted-workflow
+name: Retry Exhausted Workflow
+version: "0.1"
+entrypoint: flaky_python
+nodes:
+  flaky_python:
+    type: tool
+    policy:
+      on_failure: halt
+      max_attempts: 2
+    tool:
+      adapter: python
+      name: always_fails
+      args:
+        value: "{topic}"
+validations:
+  - type: run_status
+    equals: failed
+  - type: node_failed
+    node: flaky_python
+  - type: node_attempts
+    node: flaky_python
+    equals: 2
+  - type: node_policy_outcome
+    node: flaky_python
+    equals: retry_exhausted
