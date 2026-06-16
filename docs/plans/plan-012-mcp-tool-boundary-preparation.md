@@ -8,7 +8,7 @@
 - Baseline: Plans 001-011 are closed with local YAML DAG execution, bounded python/shell/http tool nodes, structured reports, hardened schema validation, immutable provenance, retry/failure policy, output contracts, run resumption, local artifact evidence bundles, execution governance policies, and run store maintenance. The current tool system executes adapters directly but lacks a stable SDK-level invocation contract and an explicit MCP reserved boundary, so future MCP integration pressure could blur adapter responsibilities or weaken audit evidence.
 - Owner: engineering
 - Created: 2026-06-16T07:13:37.602755+00:00
-- Updated: 2026-06-16T07:42:34.335511+00:00
+- Updated: 2026-06-16T07:51:16.486983+00:00
 
 ## Goals
 
@@ -74,6 +74,7 @@
 
 - ver-f17a973d9c07
 - ver-f9df49ccf93f
+- ver-0cfc7c745ce6
 
 ## Audits
 
