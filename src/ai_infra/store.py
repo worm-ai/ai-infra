@@ -245,6 +245,126 @@ class RunStore:
             verification_id = int(cursor.lastrowid)
         return StoredVerification(id=verification_id, run_id=run_id, status=status, checks=checks)
 
+    def table_row_counts(self, tables: list[str]) -> dict[str, int | None]:
+        counts: dict[str, int | None] = {}
+        with self._connect() as connection:
+            existing_tables = {
+                row["name"]
+                for row in connection.execute(
+                    "select name from sqlite_master where type = 'table'"
+                ).fetchall()
+            }
+            for table in tables:
+                if table not in existing_tables:
+                    counts[table] = None
+                    continue
+                row = connection.execute(f"select count(*) as count from {table}").fetchone()
+                counts[table] = int(row["count"]) if row is not None else 0
+        return counts
+
+    def list_run_summaries(self, status: str | None = None) -> list[dict[str, Any]]:
+        where_clause = ""
+        params: tuple[str, ...] = ()
+        if status is not None:
+            where_clause = "where r.status = ?"
+            params = (status,)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                select
+                    r.rowid as sort_id,
+                    r.run_id,
+                    r.workflow_id,
+                    r.status,
+                    r.workflow_source_path,
+                    r.workflow_sha256,
+                    r.inputs_sha256,
+                    r.git_commit,
+                    (
+                        select count(*)
+                        from node_events e
+                        where e.run_id = r.run_id
+                    ) as events,
+                    (
+                        select count(*)
+                        from verifications v
+                        where v.run_id = r.run_id
+                    ) as verifications,
+                    (
+                        select count(*)
+                        from node_execution_reservations n
+                        where n.run_id = r.run_id
+                    ) as node_execution_reservations
+                from runs r
+                {where_clause}
+                order by r.rowid desc
+                """,
+                params,
+            ).fetchall()
+        return [
+            {
+                "run_id": row["run_id"],
+                "workflow_id": row["workflow_id"],
+                "status": row["status"],
+                "workflow_source_path": row["workflow_source_path"],
+                "workflow_sha256": row["workflow_sha256"],
+                "inputs_sha256": row["inputs_sha256"],
+                "git_commit": row["git_commit"],
+                "events": int(row["events"]),
+                "verifications": int(row["verifications"]),
+                "node_execution_reservations": int(row["node_execution_reservations"]),
+            }
+            for row in rows
+        ]
+
+    def related_row_counts(self, run_ids: list[str]) -> dict[str, int]:
+        if not run_ids:
+            return {
+                "runs": 0,
+                "node_events": 0,
+                "verifications": 0,
+                "node_execution_reservations": 0,
+            }
+        placeholders = ",".join("?" for _ in run_ids)
+        params = tuple(run_ids)
+        with self._connect() as connection:
+            return {
+                "runs": _count_related_rows(connection, "runs", placeholders, params),
+                "node_events": _count_related_rows(connection, "node_events", placeholders, params),
+                "verifications": _count_related_rows(connection, "verifications", placeholders, params),
+                "node_execution_reservations": _count_related_rows(
+                    connection,
+                    "node_execution_reservations",
+                    placeholders,
+                    params,
+                ),
+            }
+
+    def delete_runs(self, run_ids: list[str]) -> dict[str, int]:
+        counts = self.related_row_counts(run_ids)
+        if not run_ids:
+            return counts
+        placeholders = ",".join("?" for _ in run_ids)
+        params = tuple(run_ids)
+        with self._connect() as connection:
+            connection.execute(
+                f"delete from node_execution_reservations where run_id in ({placeholders})",
+                params,
+            )
+            connection.execute(
+                f"delete from verifications where run_id in ({placeholders})",
+                params,
+            )
+            connection.execute(
+                f"delete from node_events where run_id in ({placeholders})",
+                params,
+            )
+            connection.execute(
+                f"delete from runs where run_id in ({placeholders})",
+                params,
+            )
+        return counts
+
     def get_run(self, run_id: str) -> StoredRun:
         with self._connect() as connection:
             run_row = connection.execute("select * from runs where run_id = ?", (run_id,)).fetchone()
@@ -298,6 +418,19 @@ class RunStore:
             events=events,
             verifications=verifications,
         )
+
+
+def _count_related_rows(
+    connection: sqlite3.Connection,
+    table: str,
+    placeholders: str,
+    params: tuple[str, ...],
+) -> int:
+    row = connection.execute(
+        f"select count(*) as count from {table} where run_id in ({placeholders})",
+        params,
+    ).fetchone()
+    return int(row["count"]) if row is not None else 0
 
 
 def _run_provenance_from_row(row: sqlite3.Row) -> RunProvenance | None:

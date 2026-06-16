@@ -515,3 +515,93 @@ validations:
     checks = {check["message"] for check in json.loads(verify.stdout)["verification"]["checks"]}
     assert "node 'first' governance status is 'within_limits', expected 'within_limits'" in checks
     assert "node 'second' governance status is 'budget_exhausted', expected 'budget_exhausted'" in checks
+
+
+def test_cli_store_health_runs_and_cleanup_dry_run(tmp_path):
+    first = run_cli(
+        "run",
+        "examples/hello_workflow.yaml",
+        "--input-file",
+        "examples/hello_input.json",
+        state_dir=tmp_path,
+    )
+    assert first.returncode == 0
+    first_run_id = json.loads(first.stdout)["run"]["run_id"]
+    second = run_cli(
+        "run",
+        "examples/tool_failure_workflow.yaml",
+        "--input-file",
+        "examples/tool_input.json",
+        state_dir=tmp_path,
+    )
+    assert second.returncode == 0
+    second_run_id = json.loads(second.stdout)["run"]["run_id"]
+
+    health = run_cli("store-health", state_dir=tmp_path)
+    assert health.returncode == 0
+    health_payload = json.loads(health.stdout)
+    assert health_payload["ok"] is True
+    assert health_payload["health"]["tables"]["runs"]["rows"] == 2
+    assert health_payload["health"]["tables"]["node_events"]["rows"] == 3
+
+    runs = run_cli("runs", "--status", "failed", state_dir=tmp_path)
+    assert runs.returncode == 0
+    runs_payload = json.loads(runs.stdout)
+    assert [run["run_id"] for run in runs_payload["runs"]] == [second_run_id]
+
+    cleanup = run_cli("cleanup", "--keep-last", "1", state_dir=tmp_path)
+    assert cleanup.returncode == 0
+    cleanup_payload = json.loads(cleanup.stdout)
+    assert cleanup_payload["ok"] is True
+    assert cleanup_payload["cleanup"]["mode"] == "dry_run"
+    assert [run["run_id"] for run in cleanup_payload["cleanup"]["kept_runs"]] == [second_run_id]
+    assert [run["run_id"] for run in cleanup_payload["cleanup"]["delete_runs"]] == [first_run_id]
+
+    status = run_cli("status", first_run_id, state_dir=tmp_path)
+    assert status.returncode == 0
+
+
+def test_cli_store_health_does_not_create_missing_database(tmp_path):
+    health = run_cli("store-health", state_dir=tmp_path)
+
+    assert health.returncode == 0
+    payload = json.loads(health.stdout)
+    assert payload["ok"] is True
+    assert payload["health"]["database"]["exists"] is False
+    assert payload["health"]["tables"]["runs"] == {"present": False, "rows": 0}
+    assert (tmp_path / "runs.sqlite").exists() is False
+
+
+def test_cli_cleanup_apply_removes_old_run(tmp_path):
+    first = run_cli(
+        "run",
+        "examples/hello_workflow.yaml",
+        "--input-file",
+        "examples/hello_input.json",
+        state_dir=tmp_path,
+    )
+    assert first.returncode == 0
+    first_run_id = json.loads(first.stdout)["run"]["run_id"]
+    second = run_cli(
+        "run",
+        "examples/hello_workflow.yaml",
+        "--input-file",
+        "examples/hello_input.json",
+        state_dir=tmp_path,
+    )
+    assert second.returncode == 0
+    second_run_id = json.loads(second.stdout)["run"]["run_id"]
+
+    cleanup = run_cli("cleanup", "--keep-last", "1", "--apply", state_dir=tmp_path)
+
+    assert cleanup.returncode == 0
+    payload = json.loads(cleanup.stdout)
+    assert payload["cleanup"]["mode"] == "apply"
+    assert [run["run_id"] for run in payload["cleanup"]["deleted_runs"]] == [first_run_id]
+
+    deleted_status = run_cli("status", first_run_id, state_dir=tmp_path)
+    assert deleted_status.returncode == 2
+    assert "not found" in json.loads(deleted_status.stdout)["error"]
+
+    kept_status = run_cli("status", second_run_id, state_dir=tmp_path)
+    assert kept_status.returncode == 0

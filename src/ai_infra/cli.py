@@ -8,6 +8,12 @@ from typing import Any
 
 from .artifacts import export_evidence_bundle
 from .config import WorkflowValidationError, load_workflow, validate_workflow
+from .maintenance import (
+    apply_retention_cleanup,
+    inspect_state_dir,
+    list_run_summaries,
+    plan_retention_cleanup,
+)
 from .reporting import build_run_report
 from .runtime import default_store, get_run, resume_workflow, run_workflow, validate_run, validate_stored_run
 
@@ -45,7 +51,21 @@ def main(argv: list[str] | None = None) -> int:
     verify_parser.add_argument("run_id")
     verify_parser.add_argument("--workflow")
 
+    subparsers.add_parser("store-health")
+
+    runs_parser = subparsers.add_parser("runs")
+    runs_parser.add_argument("--status")
+
+    cleanup_parser = subparsers.add_parser("cleanup")
+    cleanup_parser.add_argument("--keep-last", type=int, required=True)
+    cleanup_parser.add_argument("--status")
+    cleanup_parser.add_argument("--apply", action="store_true")
+
     args = parser.parse_args(argv)
+    if args.command == "store-health":
+        _print({"ok": True, "health": inspect_state_dir(args.state_dir)})
+        return 0
+
     store = default_store(args.state_dir)
 
     try:
@@ -91,7 +111,17 @@ def main(argv: list[str] | None = None) -> int:
                 verification = validate_stored_run(args.run_id, store=store)
             _print({"ok": verification.status == "passed", "verification": asdict(verification)})
             return 0 if verification.status == "passed" else 1
-    except (WorkflowValidationError, KeyError, RuntimeError, json.JSONDecodeError) as exc:
+        if args.command == "runs":
+            _print({"ok": True, "runs": list_run_summaries(store, status=args.status)})
+            return 0
+        if args.command == "cleanup":
+            if args.apply:
+                cleanup = apply_retention_cleanup(store, keep_last=args.keep_last, status=args.status)
+            else:
+                cleanup = plan_retention_cleanup(store, keep_last=args.keep_last, status=args.status)
+            _print({"ok": True, "cleanup": cleanup})
+            return 0
+    except (WorkflowValidationError, KeyError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
         _print({"ok": False, "error": str(exc)})
         return 2
     return 2
