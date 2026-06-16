@@ -6,6 +6,7 @@ from ai_infra import (
     get_run,
     load_workflow,
     load_workflow_from_source,
+    resume_workflow,
     run_workflow,
     validate_run,
     validate_stored_run,
@@ -634,3 +635,256 @@ def test_node_contract_validation_uses_event_metadata_not_user_output_contract_f
     verification = validate_run("run-user-contract-field", workflow, store=store)
 
     assert verification.status == "passed"
+
+
+def test_resume_workflow_skips_completed_nodes_and_reruns_failed_nodes(tmp_path):
+    calls = {"prepare": 0, "flaky": 0}
+
+    def prepare(args):
+        calls["prepare"] += 1
+        return f"prepared:{args['value']}"
+
+    def flaky(args):
+        calls["flaky"] += 1
+        if calls["flaky"] == 1:
+            raise RuntimeError("temporary resume failure")
+        return f"finished:{args['value']}"
+
+    default_tool_registry.register_python("resume_prepare", prepare)
+    default_tool_registry.register_python("resume_flaky", flaky)
+    workflow_path = tmp_path / "resume_workflow.yaml"
+    workflow_path.write_text(
+        """
+id: resume-workflow
+entrypoint: prepare
+nodes:
+  prepare:
+    type: tool
+    next: flaky
+    tool:
+      adapter: python
+      name: resume_prepare
+      args:
+        value: "{topic}"
+  flaky:
+    type: tool
+    next: downstream
+    tool:
+      adapter: python
+      name: resume_flaky
+      args:
+        value: "{prepare.result}"
+  downstream:
+    type: template
+    template: "Done {flaky.result}"
+validations:
+  - type: run_status
+    equals: completed
+  - type: node_completed
+    node: flaky
+  - type: node_resume_action
+    node: prepare
+    equals: skipped
+  - type: node_resume_action
+    node: flaky
+    equals: rerun
+  - type: node_resume_action
+    node: downstream
+    equals: run
+""".strip(),
+        encoding="utf-8",
+    )
+    store = RunStore(tmp_path / "runs.sqlite")
+    workflow = load_workflow(workflow_path)
+
+    first = run_workflow(workflow, {"topic": "ABH"}, store=store)
+    resumed = resume_workflow(first.run_id, workflow, store=store)
+    verification = validate_stored_run(first.run_id, store=store)
+
+    assert first.status == "failed"
+    assert resumed.run_id == first.run_id
+    assert resumed.status == "completed"
+    assert calls == {"prepare": 1, "flaky": 2}
+    assert resumed.outputs["prepare"]["result"] == "prepared:ABH"
+    assert resumed.outputs["flaky"]["result"] == "finished:prepared:ABH"
+    assert resumed.outputs["downstream"] == "Done finished:prepared:ABH"
+    saved = get_run(first.run_id, store=store)
+    assert [event.node_id for event in saved.events] == [
+        "prepare",
+        "flaky",
+        "prepare",
+        "flaky",
+        "downstream",
+    ]
+    assert saved.events[2].status == "skipped"
+    assert saved.events[2].metadata["resume"]["action"] == "skipped"
+    assert saved.events[3].status == "completed"
+    assert saved.events[3].metadata["resume"]["action"] == "rerun"
+    assert saved.events[4].metadata["resume"]["action"] == "run"
+    assert verification.status == "passed"
+
+
+def test_resume_workflow_skipped_events_do_not_count_as_node_attempts(tmp_path):
+    calls = {"prepare": 0, "flaky": 0}
+
+    def prepare(args):
+        calls["prepare"] += 1
+        return f"prepared:{args['value']}"
+
+    def flaky(args):
+        calls["flaky"] += 1
+        if calls["flaky"] == 1:
+            raise RuntimeError("temporary attempt failure")
+        return f"finished:{args['value']}"
+
+    default_tool_registry.register_python("resume_attempt_prepare", prepare)
+    default_tool_registry.register_python("resume_attempt_flaky", flaky)
+    workflow_path = tmp_path / "resume_attempts.yaml"
+    workflow_path.write_text(
+        """
+id: resume-attempts
+entrypoint: prepare
+nodes:
+  prepare:
+    type: tool
+    next: flaky
+    tool:
+      adapter: python
+      name: resume_attempt_prepare
+      args:
+        value: "{topic}"
+  flaky:
+    type: tool
+    tool:
+      adapter: python
+      name: resume_attempt_flaky
+      args:
+        value: "{prepare.result}"
+validations:
+  - type: run_status
+    equals: completed
+  - type: node_attempts
+    node: prepare
+    equals: 1
+  - type: node_attempts
+    node: flaky
+    equals: 2
+""".strip(),
+        encoding="utf-8",
+    )
+    store = RunStore(tmp_path / "runs.sqlite")
+    workflow = load_workflow(workflow_path)
+
+    first = run_workflow(workflow, {"topic": "ABH"}, store=store)
+    resume_workflow(first.run_id, workflow, store=store)
+    verification = validate_stored_run(first.run_id, store=store)
+
+    checks = {check.message for check in verification.checks}
+    assert verification.status == "passed"
+    assert "node 'prepare' attempts is 1, expected 1" in checks
+    assert "node 'flaky' attempts is 2, expected 2" in checks
+
+
+def test_resume_workflow_reruns_descendants_of_failed_continue_nodes(tmp_path):
+    calls = {"optional": 0}
+
+    def optional(args):
+        calls["optional"] += 1
+        if calls["optional"] == 1:
+            raise RuntimeError("optional outage")
+        return "recovered"
+
+    default_tool_registry.register_python("resume_continue_optional", optional)
+    workflow_path = tmp_path / "resume_continue_descendant.yaml"
+    workflow_path.write_text(
+        """
+id: resume-continue-descendant
+entrypoint: optional
+nodes:
+  optional:
+    type: tool
+    next: downstream
+    policy:
+      on_failure: continue
+    tool:
+      adapter: python
+      name: resume_continue_optional
+  downstream:
+    type: template
+    template: "Downstream saw {optional.node_status}"
+validations:
+  - type: run_status
+    equals: completed
+  - type: node_resume_action
+    node: optional
+    equals: rerun
+  - type: node_resume_action
+    node: downstream
+    equals: rerun
+  - type: node_attempts
+    node: downstream
+    equals: 2
+""".strip(),
+        encoding="utf-8",
+    )
+    store = RunStore(tmp_path / "runs.sqlite")
+    workflow = load_workflow(workflow_path)
+
+    first = run_workflow(workflow, {}, store=store)
+    resumed = resume_workflow(first.run_id, workflow, store=store)
+    verification = validate_stored_run(first.run_id, store=store)
+
+    assert first.status == "completed"
+    assert first.outputs["downstream"] == "Downstream saw failed"
+    assert resumed.status == "completed"
+    assert resumed.outputs["downstream"] == "Downstream saw completed"
+    assert verification.status == "passed"
+
+
+def test_resume_workflow_rejects_changed_workflow_source(tmp_path):
+    def fail(args):
+        raise RuntimeError("first run failure")
+
+    default_tool_registry.register_python("resume_source_fail", fail)
+    workflow_path = tmp_path / "resume_drift.yaml"
+    workflow_path.write_text(
+        """
+id: resume-drift
+entrypoint: start
+nodes:
+  start:
+    type: tool
+    tool:
+      adapter: python
+      name: resume_source_fail
+validations:
+  - type: run_status
+    equals: failed
+""".strip(),
+        encoding="utf-8",
+    )
+    store = RunStore(tmp_path / "runs.sqlite")
+    original = load_workflow(workflow_path)
+    result = run_workflow(original, {}, store=store)
+    workflow_path.write_text(
+        """
+id: resume-drift
+entrypoint: start
+nodes:
+  start:
+    type: template
+    template: "changed"
+validations:
+  - type: run_status
+    equals: completed
+""".strip(),
+        encoding="utf-8",
+    )
+    changed = load_workflow(workflow_path)
+
+    try:
+        resume_workflow(result.run_id, changed, store=store)
+    except RuntimeError as exc:
+        assert "workflow source changed since run" in str(exc)
+    else:
+        raise AssertionError("resume_workflow should reject workflow source drift")

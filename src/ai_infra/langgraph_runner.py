@@ -18,6 +18,7 @@ class WorkflowRunState(TypedDict, total=False):
     events: Annotated[list[NodeEvent], operator.add]
     status: Annotated[str, _merge_status]
     halted: Annotated[bool, _merge_halted]
+    resume: dict[str, Any]
 
 
 def compile_workflow(workflow: Workflow, store: RunStore | None = None) -> Any:
@@ -54,6 +55,10 @@ def _node_executor(node: WorkflowNode, store: RunStore | None):
         context = {**inputs, **dict(state.get("context") or {})}
         run_id = str(state.get("run_id") or "")
         policy = _node_policy(node)
+        resume_action = _resume_action(node.id, state)
+        if resume_action == "skipped":
+            return _skipped_node_state(node, state, context, run_id, store)
+
         events: list[NodeEvent] = []
         output: Any = None
         node_status = "failed"
@@ -86,6 +91,8 @@ def _node_executor(node: WorkflowNode, store: RunStore | None):
             event_metadata: dict[str, Any] = {}
             if contract_evidence is not None:
                 event_metadata["contract"] = {"output": contract_evidence}
+            if resume_action is not None:
+                event_metadata["resume"] = {"action": resume_action}
             if contract_error is not None:
                 event_output.setdefault("error", contract_error)
             outcome = _policy_outcome(node_status, attempt, policy, final_attempt)
@@ -120,6 +127,63 @@ def _node_executor(node: WorkflowNode, store: RunStore | None):
         }
 
     return execute
+
+
+def _skipped_node_state(
+    node: WorkflowNode,
+    state: WorkflowRunState,
+    context: dict[str, Any],
+    run_id: str,
+    store: RunStore | None,
+) -> WorkflowRunState:
+    resume = dict(state.get("resume") or {})
+    outputs = dict(resume.get("outputs") or {})
+    events = dict(resume.get("events") or {})
+    output = outputs[node.id]
+    source_event = events.get(node.id)
+    event_output = source_event.output if isinstance(source_event, NodeEvent) else _event_output(
+        output,
+        1,
+        _node_policy(node),
+        "completed",
+    )
+    event_metadata = dict(source_event.metadata) if isinstance(source_event, NodeEvent) else {}
+    event_metadata["resume"] = {
+        "action": "skipped",
+        "source_event_status": source_event.status if isinstance(source_event, NodeEvent) else "completed",
+    }
+    event = NodeEvent(
+        run_id=run_id,
+        node_id=node.id,
+        status="skipped",
+        input={**context, node.id: event_output},
+        output=event_output,
+        metadata=event_metadata,
+    )
+    if store is not None and event.run_id:
+        store.add_event(event)
+    return {
+        "context": {node.id: output},
+        "outputs": {node.id: output},
+        "events": [event],
+        "status": "completed",
+        "halted": False,
+    }
+
+
+def _resume_action(node_id: str, state: WorkflowRunState) -> str | None:
+    resume = state.get("resume")
+    if not isinstance(resume, dict) or not resume.get("enabled"):
+        return None
+    outputs = resume.get("outputs")
+    if isinstance(outputs, dict) and node_id in outputs:
+        return "skipped"
+    attempted = resume.get("attempted")
+    if isinstance(attempted, set) and node_id in attempted:
+        return "rerun"
+    if isinstance(attempted, list) and node_id in attempted:
+        return "rerun"
+    return "run"
 
 
 def _merge_dicts(left: dict[str, Any] | None, right: dict[str, Any] | None) -> dict[str, Any]:

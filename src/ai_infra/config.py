@@ -19,6 +19,7 @@ SUPPORTED_TOOL_ADAPTERS = {"python", "shell", "http"}
 SUPPORTED_HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
 SUPPORTED_CONTRACT_TYPES = {"object", "array", "string", "integer", "number", "boolean", "null"}
 SUPPORTED_CONTRACT_STATUSES = {"passed", "failed"}
+SUPPORTED_RESUME_ACTIONS = {"run", "rerun", "skipped"}
 SUPPORTED_VALIDATION_TYPES = {
     "run_status",
     "node_completed",
@@ -26,6 +27,7 @@ SUPPORTED_VALIDATION_TYPES = {
     "node_attempts",
     "node_policy_outcome",
     "node_contract",
+    "node_resume_action",
 }
 SUPPORTED_ON_FAILURE = {"halt", "continue"}
 SUPPORTED_POLICY_OUTCOMES = {
@@ -382,6 +384,16 @@ def _validate_run_validation(index: int, validation: WorkflowValidation, node_id
             raise WorkflowValidationError(f"{context} node_contract requires equals")
         if expected not in SUPPORTED_CONTRACT_STATUSES:
             raise WorkflowValidationError(f"{context} node_contract has unsupported equals {expected!r}")
+        return
+
+    if validation.type == "node_resume_action":
+        _reject_unknown_fields(validation.config, {"node", "equals"}, context)
+        _validate_validation_node_reference(context, validation, node_ids)
+        expected = validation.config.get("equals")
+        if not _is_non_empty_string(expected):
+            raise WorkflowValidationError(f"{context} node_resume_action requires equals")
+        if expected not in SUPPORTED_RESUME_ACTIONS:
+            raise WorkflowValidationError(f"{context} node_resume_action has unsupported equals {expected!r}")
         return
 
     _reject_unknown_fields(validation.config, {"node"}, context)

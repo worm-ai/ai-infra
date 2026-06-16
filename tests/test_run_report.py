@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from ai_infra import build_run_report, load_workflow, run_workflow
+from ai_infra import build_run_report, load_workflow, resume_workflow, run_workflow
 from ai_infra.store import RunStore
 from ai_infra.tools import default_tool_registry
 
@@ -320,3 +320,61 @@ validations:
     [node] = report["timeline"]
     assert node["contract"]["output"]["status"] == "failed"
     assert node["contract"]["output"]["missing_fields"] == ["missing"]
+
+
+def test_build_run_report_summarizes_resume_evidence(tmp_path):
+    calls = {"prepare": 0, "flaky": 0}
+
+    def prepare(args):
+        calls["prepare"] += 1
+        return f"prepared:{args['value']}"
+
+    def flaky(args):
+        calls["flaky"] += 1
+        if calls["flaky"] == 1:
+            raise RuntimeError("temporary report failure")
+        return f"finished:{args['value']}"
+
+    default_tool_registry.register_python("report_resume_prepare", prepare)
+    default_tool_registry.register_python("report_resume_flaky", flaky)
+    workflow_path = tmp_path / "report_resume_workflow.yaml"
+    workflow_path.write_text(
+        """
+id: report-resume-workflow
+entrypoint: prepare
+nodes:
+  prepare:
+    type: tool
+    next: flaky
+    tool:
+      adapter: python
+      name: report_resume_prepare
+      args:
+        value: "{topic}"
+  flaky:
+    type: tool
+    tool:
+      adapter: python
+      name: report_resume_flaky
+      args:
+        value: "{prepare.result}"
+validations:
+  - type: run_status
+    equals: completed
+""".strip(),
+        encoding="utf-8",
+    )
+    store = RunStore(tmp_path / "runs.sqlite")
+    workflow = load_workflow(workflow_path)
+    first = run_workflow(workflow, {"topic": "ABH"}, store=store)
+
+    resumed = resume_workflow(first.run_id, workflow, store=store)
+    report = build_run_report(resumed.run_id, store=store)
+
+    assert report["status"] == "completed"
+    assert report["summary"]["resume"] == {"skipped": 1, "rerun": 1, "run": 0}
+    assert [node["resume"]["action"] for node in report["timeline"]] == ["skipped", "rerun"]
+    assert report["timeline"][0]["status"] == "skipped"
+    assert report["timeline"][0]["resume"]["source_event_status"] == "completed"
+    assert report["timeline"][1]["status"] == "completed"
+    assert report["timeline"][1]["resume"]["action"] == "rerun"

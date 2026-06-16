@@ -278,3 +278,78 @@ def test_cli_output_contract_failure_report_and_verify(tmp_path):
     verify = run_cli("verify", run_id, state_dir=tmp_path)
     assert verify.returncode == 0
     assert json.loads(verify.stdout)["verification"]["status"] == "passed"
+
+
+def test_cli_resume_report_and_verify(tmp_path):
+    workflow_path = tmp_path / "cli_resume_workflow.yaml"
+    input_path = tmp_path / "cli_resume_input.json"
+    marker_path = (tmp_path / "cli_resume_marker.txt").as_posix()
+    workflow_path.write_text(
+        """
+id: cli-resume-workflow
+entrypoint: prepare
+nodes:
+  prepare:
+    type: tool
+    next: flaky
+    tool:
+      adapter: python
+      name: echo
+      args:
+        value: "{topic}"
+  flaky:
+    type: tool
+    next: downstream
+    tool:
+      adapter: shell
+      command: >-
+        python -c "from pathlib import Path; import sys; marker=Path(sys.argv[1]); value=sys.argv[2]; marker.parent.mkdir(parents=True, exist_ok=True); sys.stdout.write('finished:'+value) if marker.exists() else (marker.write_text('seen'), sys.exit(9))" {marker} {prepare.result}
+      timeout_seconds: 5
+  downstream:
+    type: template
+    template: "Done {flaky.stdout}"
+validations:
+  - type: run_status
+    equals: completed
+  - type: node_completed
+    node: downstream
+  - type: node_resume_action
+    node: prepare
+    equals: skipped
+  - type: node_resume_action
+    node: flaky
+    equals: rerun
+  - type: node_resume_action
+    node: downstream
+    equals: run
+""".strip(),
+        encoding="utf-8",
+    )
+    input_path.write_text(json.dumps({"topic": "ABH", "marker": marker_path}), encoding="utf-8")
+    run = run_cli("run", str(workflow_path), "--input-file", str(input_path), state_dir=tmp_path)
+    assert run.returncode == 0
+    run_payload = json.loads(run.stdout)
+    run_id = run_payload["run"]["run_id"]
+    assert run_payload["run"]["status"] == "failed"
+
+    resume = run_cli("resume", run_id, "--workflow", str(workflow_path), state_dir=tmp_path)
+    assert resume.returncode == 0
+    resume_payload = json.loads(resume.stdout)
+    assert resume_payload["run"]["run_id"] == run_id
+    assert resume_payload["run"]["status"] == "completed"
+    assert resume_payload["run"]["outputs"]["downstream"] == "Done finished:ABH"
+
+    report = run_cli("report", run_id, state_dir=tmp_path)
+    assert report.returncode == 0
+    report_payload = json.loads(report.stdout)
+    assert report_payload["report"]["summary"]["resume"] == {"skipped": 1, "rerun": 1, "run": 1}
+    assert [node["resume"]["action"] for node in report_payload["report"]["timeline"]] == [
+        "skipped",
+        "rerun",
+        "run",
+    ]
+
+    verify = run_cli("verify", run_id, state_dir=tmp_path)
+    assert verify.returncode == 0
+    checks = {check["type"]: check for check in json.loads(verify.stdout)["verification"]["checks"]}
+    assert checks["node_resume_action"]["status"] == "passed"

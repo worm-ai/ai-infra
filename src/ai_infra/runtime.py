@@ -79,6 +79,58 @@ def run_workflow(workflow: Workflow, inputs: dict[str, Any], store: RunStore | N
     return RunResult(run_id=run_id, workflow_id=workflow.id, status=status, outputs=outputs, events=events)
 
 
+def resume_workflow(run_id: str, workflow: Workflow, store: RunStore | None = None) -> RunResult:
+    validate_workflow(workflow)
+    run_store = store or default_store()
+    stored = run_store.get_run(run_id)
+    _validate_resume_compatibility(stored, workflow)
+
+    workflow_source_path = str(workflow.source_path) if workflow.source_path else None
+    provenance = stored.provenance
+    resume_state = _resume_state(stored, workflow)
+
+    run_store.save_run(
+        StoredRun(
+            run_id=run_id,
+            workflow_id=stored.workflow_id,
+            status="running",
+            inputs=stored.inputs,
+            outputs=stored.outputs,
+            workflow_source_path=workflow_source_path,
+            provenance=provenance,
+        )
+    )
+
+    graph = compile_workflow(workflow, store=run_store)
+    state = graph.invoke(
+        {
+            "run_id": run_id,
+            "inputs": stored.inputs,
+            "context": dict(stored.inputs),
+            "outputs": {},
+            "events": [],
+            "status": "running",
+            "resume": resume_state,
+        }
+    )
+    outputs = dict(state.get("outputs") or {})
+    events = list(state.get("events") or [])
+    status = str(state.get("status") or "completed")
+
+    run_store.save_run(
+        StoredRun(
+            run_id=run_id,
+            workflow_id=stored.workflow_id,
+            status=status,
+            inputs=stored.inputs,
+            outputs=outputs,
+            workflow_source_path=workflow_source_path,
+            provenance=provenance,
+        )
+    )
+    return RunResult(run_id=run_id, workflow_id=workflow.id, status=status, outputs=outputs, events=events)
+
+
 def get_run(run_id: str, store: RunStore | None = None) -> StoredRun:
     return (store or default_store()).get_run(run_id)
 
@@ -197,7 +249,11 @@ def _evaluate_validation(validation_type: str, config: dict[str, Any], run: Stor
     if validation_type == "node_attempts":
         node_id = config.get("node")
         expected = config.get("equals")
-        attempts = [event for event in run.events if event.node_id == node_id]
+        attempts = [
+            event
+            for event in run.events
+            if event.node_id == node_id and event.status != "skipped"
+        ]
         actual = len(attempts)
         passed = actual == expected
         return VerificationCheck(
@@ -227,7 +283,99 @@ def _evaluate_validation(validation_type: str, config: dict[str, Any], run: Stor
             status="passed" if passed else "failed",
             message=f"node {node_id!r} contract status is {actual!r}, expected {expected!r}",
         )
+    if validation_type == "node_resume_action":
+        node_id = config.get("node")
+        expected = config.get("equals")
+        attempts = [event for event in run.events if event.node_id == node_id]
+        actual = _latest_resume_action(attempts)
+        passed = actual == expected
+        return VerificationCheck(
+            type=validation_type,
+            status="passed" if passed else "failed",
+            message=f"node {node_id!r} resume action is {actual!r}, expected {expected!r}",
+        )
     return VerificationCheck(type=validation_type, status="failed", message="unsupported validation type")
+
+
+def _validate_resume_compatibility(stored: StoredRun, workflow: Workflow) -> None:
+    if stored.provenance is None:
+        raise RuntimeError(f"run {stored.run_id!r} does not include immutable workflow provenance")
+    if stored.workflow_id != workflow.id:
+        raise RuntimeError(
+            f"run {stored.run_id!r} references workflow {stored.workflow_id!r}, "
+            f"but resume requested workflow {workflow.id!r}"
+        )
+
+    current_provenance = build_run_provenance(workflow, stored.inputs)
+    if current_provenance.workflow_sha256 != stored.provenance.workflow_sha256:
+        raise RuntimeError(
+            "workflow source changed since run: "
+            f"current sha256 {current_provenance.workflow_sha256}, "
+            f"run snapshot sha256 {stored.provenance.workflow_sha256}"
+        )
+    if current_provenance.inputs_sha256 != stored.provenance.inputs_sha256:
+        raise RuntimeError(
+            "run inputs changed since run: "
+            f"current sha256 {current_provenance.inputs_sha256}, "
+            f"run snapshot sha256 {stored.provenance.inputs_sha256}"
+        )
+
+
+def _resume_state(stored: StoredRun, workflow: Workflow) -> dict[str, Any]:
+    latest_by_node: dict[str, NodeEvent] = {}
+    attempted: set[str] = set()
+    for event in stored.events:
+        latest_by_node[event.node_id] = event
+        attempted.add(event.node_id)
+
+    rerun_nodes = _rerun_nodes(latest_by_node, workflow)
+    reusable_outputs: dict[str, Any] = {}
+    reusable_events: dict[str, NodeEvent] = {}
+    for node_id, event in latest_by_node.items():
+        if node_id in rerun_nodes:
+            continue
+        if event.status not in ("completed", "skipped"):
+            continue
+        if node_id not in stored.outputs:
+            continue
+        reusable_outputs[node_id] = stored.outputs[node_id]
+        reusable_events[node_id] = event
+
+    return {
+        "enabled": True,
+        "attempted": attempted,
+        "outputs": reusable_outputs,
+        "events": reusable_events,
+    }
+
+
+def _rerun_nodes(latest_by_node: dict[str, NodeEvent], workflow: Workflow) -> set[str]:
+    roots = {
+        node_id
+        for node_id, event in latest_by_node.items()
+        if event.status not in ("completed", "skipped")
+    }
+    successors = _workflow_successors(workflow)
+    rerun = set(roots)
+    stack = list(roots)
+    while stack:
+        node_id = stack.pop()
+        for target in successors.get(node_id, []):
+            if target in rerun:
+                continue
+            rerun.add(target)
+            stack.append(target)
+    return rerun
+
+
+def _workflow_successors(workflow: Workflow) -> dict[str, list[str]]:
+    successors: dict[str, list[str]] = {node.id: [] for node in workflow.nodes}
+    for node in workflow.nodes:
+        if node.next:
+            successors.setdefault(node.id, []).append(node.next)
+    for edge in workflow.edges:
+        successors.setdefault(edge.source, []).append(edge.target)
+    return successors
 
 
 def _latest_policy_outcome(events: list[NodeEvent]) -> str | None:
@@ -252,3 +400,14 @@ def _latest_contract_status(events: list[NodeEvent]) -> str | None:
         return None
     status = output_contract.get("status")
     return status if isinstance(status, str) else None
+
+
+def _latest_resume_action(events: list[NodeEvent]) -> str | None:
+    for event in reversed(events):
+        resume = event.metadata.get("resume")
+        if not isinstance(resume, dict):
+            continue
+        action = resume.get("action")
+        if isinstance(action, str):
+            return action
+    return None

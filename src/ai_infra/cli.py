@@ -8,7 +8,7 @@ from typing import Any
 
 from .config import WorkflowValidationError, load_workflow, validate_workflow
 from .reporting import build_run_report
-from .runtime import default_store, get_run, run_workflow, validate_run, validate_stored_run
+from .runtime import default_store, get_run, resume_workflow, run_workflow, validate_run, validate_stored_run
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -22,6 +22,10 @@ def main(argv: list[str] | None = None) -> int:
     run_parser = subparsers.add_parser("run")
     run_parser.add_argument("workflow")
     run_parser.add_argument("--input-file", required=True)
+
+    resume_parser = subparsers.add_parser("resume")
+    resume_parser.add_argument("run_id")
+    resume_parser.add_argument("--workflow", required=True)
 
     status_parser = subparsers.add_parser("status")
     status_parser.add_argument("run_id")
@@ -49,6 +53,11 @@ def main(argv: list[str] | None = None) -> int:
             workflow = load_workflow(args.workflow)
             inputs = json.loads(Path(args.input_file).read_text(encoding="utf-8"))
             result = run_workflow(workflow, inputs, store=store)
+            _print({"ok": True, "run": _run_result_payload(result)})
+            return 0
+        if args.command == "resume":
+            workflow = load_workflow(args.workflow)
+            result = resume_workflow(args.run_id, workflow, store=store)
             _print({"ok": True, "run": _run_result_payload(result)})
             return 0
         if args.command == "status":

@@ -160,6 +160,30 @@ validations:
     }
 
 
+def test_load_workflow_accepts_node_resume_action_validation(tmp_path):
+    path = write_workflow(
+        tmp_path,
+        """
+id: resume-validation-contract
+entrypoint: only
+nodes:
+  only:
+    type: template
+    template: Hello
+validations:
+  - type: node_resume_action
+    node: only
+    equals: skipped
+""",
+    )
+
+    workflow = load_workflow(path)
+    validate_workflow(workflow)
+
+    assert workflow.validations[0].type == "node_resume_action"
+    assert workflow.validations[0].config == {"node": "only", "equals": "skipped"}
+
+
 @pytest.mark.parametrize(
     ("contract", "message"),
     [
@@ -369,6 +393,14 @@ nodes:
   equals: unknown
 """,
             "validation[0] node_contract has unsupported equals 'unknown'",
+        ),
+        (
+            """
+- type: node_resume_action
+  node: only
+  equals: reused
+""",
+            "validation[0] node_resume_action has unsupported equals 'reused'",
         ),
     ],
 )

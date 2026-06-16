@@ -20,7 +20,7 @@ def build_run_report(run_id: str, store: RunStore | None = None) -> dict[str, An
     ]
 
     summary: dict[str, Any] = {
-        "completed": sum(1 for node in timeline if node["status"] == "completed"),
+        "completed": sum(1 for node in timeline if node["status"] in ("completed", "skipped")),
         "failed": len(failed_nodes),
         "retried": len(retry_events),
         "total_nodes": len(timeline),
@@ -29,6 +29,9 @@ def build_run_report(run_id: str, store: RunStore | None = None) -> dict[str, An
     contract_summary = _contract_summary(timeline)
     if contract_summary is not None:
         summary["contracts"] = contract_summary
+    resume_summary = _resume_summary(timeline)
+    if resume_summary is not None:
+        summary["resume"] = resume_summary
 
     return {
         "run_id": run.run_id,
@@ -76,7 +79,7 @@ def _node_report(index: int, events: list[NodeEvent]) -> dict[str, Any]:
         "sequence": index,
         "node_id": event.node_id,
         "status": event.status,
-        "attempts": len(events),
+        "attempts": sum(1 for attempt in events if attempt.status != "skipped"),
         "policy": _policy_report(event.output),
         "attempt_events": [_attempt_event_report(attempt) for attempt in events],
         "duration_ms": _duration_ms(event.output),
@@ -85,6 +88,7 @@ def _node_report(index: int, events: list[NodeEvent]) -> dict[str, Any]:
         "output": event.output,
         "tool": _tool_report(event.output),
         "contract": _contract_report(event),
+        "resume": _resume_report(event),
     }
 
 
@@ -108,6 +112,7 @@ def _attempt_event_report(event: NodeEvent) -> dict[str, Any]:
         "attempt": output.get("attempt", 1),
         "policy_outcome": output.get("policy_outcome"),
         "contract_status": _contract_status(event.metadata.get("contract")),
+        "resume_action": _resume_action(event.metadata.get("resume")),
         "duration_ms": _duration_ms(output),
         "error": output.get("error"),
     }
@@ -153,6 +158,31 @@ def _contract_report(event: NodeEvent) -> dict[str, Any] | None:
     if not isinstance(contract, dict):
         return None
     return contract
+
+
+def _resume_report(event: NodeEvent) -> dict[str, Any] | None:
+    resume = event.metadata.get("resume")
+    if not isinstance(resume, dict):
+        return None
+    return resume
+
+
+def _resume_summary(timeline: list[dict[str, Any]]) -> dict[str, int] | None:
+    counts = {"skipped": 0, "rerun": 0, "run": 0}
+    saw_resume = False
+    for node in timeline:
+        action = _resume_action(node.get("resume"))
+        if action in counts:
+            counts[action] += 1
+            saw_resume = True
+    return counts if saw_resume else None
+
+
+def _resume_action(resume: Any) -> str | None:
+    if not isinstance(resume, dict):
+        return None
+    action = resume.get("action")
+    return action if isinstance(action, str) else None
 
 
 def _contract_summary(timeline: list[dict[str, Any]]) -> dict[str, int] | None:

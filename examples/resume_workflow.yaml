@@ -1,0 +1,38 @@
+id: resume-workflow
+name: Resume Workflow
+version: "0.1"
+entrypoint: prepare
+nodes:
+  prepare:
+    type: tool
+    next: flaky_shell
+    tool:
+      adapter: python
+      name: echo
+      args:
+        value: "{topic}"
+  flaky_shell:
+    type: tool
+    next: downstream
+    tool:
+      adapter: shell
+      command: >-
+        python -c "from pathlib import Path; import sys; marker=Path(sys.argv[1]); value=sys.argv[2]; marker.parent.mkdir(parents=True, exist_ok=True); sys.stdout.write('finished:'+value) if marker.exists() else (marker.write_text('seen'), sys.exit(9))" {marker} {prepare.result}
+      timeout_seconds: 5
+  downstream:
+    type: template
+    template: "Done {flaky_shell.stdout}"
+validations:
+  - type: run_status
+    equals: completed
+  - type: node_completed
+    node: downstream
+  - type: node_resume_action
+    node: prepare
+    equals: skipped
+  - type: node_resume_action
+    node: flaky_shell
+    equals: rerun
+  - type: node_resume_action
+    node: downstream
+    equals: run
