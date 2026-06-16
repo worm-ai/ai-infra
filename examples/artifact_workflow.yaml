@@ -1,0 +1,25 @@
+id: artifact-workflow
+name: Artifact Workflow
+version: "0.1"
+entrypoint: write_note
+nodes:
+  write_note:
+    type: tool
+    artifacts:
+      - name: note
+        path: "{artifact_path}"
+        content_type: text/plain
+    tool:
+      adapter: shell
+      command: >-
+        python -c "from pathlib import Path; import sys; path=Path(sys.argv[1]); path.parent.mkdir(parents=True, exist_ok=True); path.write_text(sys.argv[2], encoding='utf-8'); print(path)" {artifact_path} "{topic} artifact evidence"
+      timeout_seconds: 5
+validations:
+  - type: run_status
+    equals: completed
+  - type: node_completed
+    node: write_note
+  - type: node_artifact
+    node: write_note
+    name: note
+    exists: true

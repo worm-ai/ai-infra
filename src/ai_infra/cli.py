@@ -6,6 +6,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from .artifacts import export_evidence_bundle
 from .config import WorkflowValidationError, load_workflow, validate_workflow
 from .reporting import build_run_report
 from .runtime import default_store, get_run, resume_workflow, run_workflow, validate_run, validate_stored_run
@@ -35,6 +36,10 @@ def main(argv: list[str] | None = None) -> int:
 
     report_parser = subparsers.add_parser("report")
     report_parser.add_argument("run_id")
+
+    export_parser = subparsers.add_parser("export-bundle")
+    export_parser.add_argument("run_id")
+    export_parser.add_argument("--output-dir", required=True)
 
     verify_parser = subparsers.add_parser("verify")
     verify_parser.add_argument("run_id")
@@ -71,6 +76,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "report":
             report = build_run_report(args.run_id, store=store)
             _print({"ok": True, "report": report})
+            return 0
+        if args.command == "export-bundle":
+            run = get_run(args.run_id, store=store)
+            report = build_run_report(args.run_id, store=store)
+            bundle = export_evidence_bundle(run, report, args.output_dir)
+            _print({"ok": True, "bundle": asdict(bundle)})
             return 0
         if args.command == "verify":
             if args.workflow:

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .artifacts import current_file_sha256, find_artifact, latest_node_artifacts
 from .config import Workflow, load_workflow_from_source, validate_workflow
 from .langgraph_runner import compile_workflow
 from .provenance import build_run_provenance, sha256_text
@@ -293,6 +294,57 @@ def _evaluate_validation(validation_type: str, config: dict[str, Any], run: Stor
             type=validation_type,
             status="passed" if passed else "failed",
             message=f"node {node_id!r} resume action is {actual!r}, expected {expected!r}",
+        )
+    if validation_type == "node_artifact":
+        node_id = config.get("node")
+        name = config.get("name")
+        expected_exists = config.get("exists", True)
+        artifacts = latest_node_artifacts(run, str(node_id))
+        artifact = find_artifact(artifacts, str(name))
+        if artifact is None:
+            return VerificationCheck(
+                type=validation_type,
+                status="failed",
+                message=f"node {node_id!r} artifact {name!r} evidence is missing",
+            )
+        recorded_exists = bool(artifact.get("exists"))
+        if recorded_exists != expected_exists:
+            return VerificationCheck(
+                type=validation_type,
+                status="failed",
+                message=(
+                    f"node {node_id!r} artifact {name!r} exists is {recorded_exists}, "
+                    f"expected {expected_exists!r}"
+                ),
+            )
+        if not expected_exists:
+            return VerificationCheck(
+                type=validation_type,
+                status="passed",
+                message=f"node {node_id!r} artifact {name!r} absence matches expectation",
+            )
+        path = str(artifact.get("stored_path") or artifact.get("path", ""))
+        current_sha256 = current_file_sha256(path)
+        recorded_sha256 = artifact.get("sha256")
+        if current_sha256 is None:
+            return VerificationCheck(
+                type=validation_type,
+                status="failed",
+                message=f"node {node_id!r} artifact {name!r} file is missing at {path!r}",
+            )
+        if current_sha256 != recorded_sha256:
+            return VerificationCheck(
+                type=validation_type,
+                status="failed",
+                message=(
+                    f"node {node_id!r} artifact {name!r} sha256 changed: "
+                    f"current {current_sha256}, run evidence {recorded_sha256}"
+                ),
+            )
+        return VerificationCheck(
+            type=validation_type,
+            status="passed",
+            message=f"node {node_id!r} artifact {name!r} exists with sha256 {recorded_sha256}",
         )
     return VerificationCheck(type=validation_type, status="failed", message="unsupported validation type")
 

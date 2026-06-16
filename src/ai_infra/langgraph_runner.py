@@ -5,6 +5,7 @@ from typing import Annotated, Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
+from .artifacts import collect_node_artifacts
 from .config import Workflow, WorkflowNode, validate_workflow
 from .store import NodeEvent, RunStore
 from .tools import _render_template, execute_tool
@@ -91,6 +92,15 @@ def _node_executor(node: WorkflowNode, store: RunStore | None):
             event_metadata: dict[str, Any] = {}
             if contract_evidence is not None:
                 event_metadata["contract"] = {"output": contract_evidence}
+            artifact_evidence = collect_node_artifacts(
+                node.config.get("artifacts"),
+                context,
+                run_id=run_id,
+                node_id=node.id,
+                state_dir=store.state_dir if store is not None else None,
+            )
+            if artifact_evidence:
+                event_metadata["artifacts"] = artifact_evidence
             if resume_action is not None:
                 event_metadata["resume"] = {"action": resume_action}
             if contract_error is not None:

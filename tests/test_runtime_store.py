@@ -1,6 +1,7 @@
 import hashlib
 import json
 from pathlib import Path
+import shlex
 
 from ai_infra import (
     get_run,
@@ -635,6 +636,160 @@ def test_node_contract_validation_uses_event_metadata_not_user_output_contract_f
     verification = validate_run("run-user-contract-field", workflow, store=store)
 
     assert verification.status == "passed"
+
+
+def test_run_workflow_persists_artifact_evidence_in_event_metadata(tmp_path):
+    artifact_path = tmp_path / "artifacts" / "note.txt"
+    workflow_path = tmp_path / "artifact_workflow.yaml"
+    workflow_path.write_text(
+        f"""
+id: artifact-workflow
+entrypoint: write_note
+nodes:
+  write_note:
+    type: tool
+    artifacts:
+      - name: note
+        path: "{artifact_path.as_posix()}"
+        content_type: text/plain
+    tool:
+      adapter: shell
+      command: >-
+        python -c "from pathlib import Path; import sys; path=Path(sys.argv[1]); path.parent.mkdir(parents=True, exist_ok=True); path.write_text(sys.argv[2], encoding='utf-8'); print(path)" {shlex.quote(artifact_path.as_posix())} "{{topic}} evidence"
+validations:
+  - type: run_status
+    equals: completed
+  - type: node_artifact
+    node: write_note
+    name: note
+    exists: true
+""".strip(),
+        encoding="utf-8",
+    )
+    store = RunStore(tmp_path / "runs.sqlite")
+    workflow = load_workflow(workflow_path)
+
+    result = run_workflow(workflow, {"topic": "ABH"}, store=store)
+    verification = validate_stored_run(result.run_id, store=store)
+
+    assert result.status == "completed"
+    saved = get_run(result.run_id, store=store)
+    [event] = saved.events
+    assert "artifacts" not in event.output
+    assert event.metadata["artifacts"] == [
+        {
+            "name": "note",
+            "path": artifact_path.as_posix(),
+            "stored_path": (tmp_path / "artifacts" / result.run_id / "write_note" / "note" / "note.txt").as_posix(),
+            "content_type": "text/plain",
+            "exists": True,
+            "size_bytes": len("ABH evidence"),
+            "sha256": hashlib.sha256(b"ABH evidence").hexdigest(),
+        }
+    ]
+    assert Path(event.metadata["artifacts"][0]["stored_path"]).read_text(encoding="utf-8") == "ABH evidence"
+    checks = {check.type: check for check in verification.checks}
+    assert checks["node_artifact"].status == "passed"
+    assert "artifact 'note' exists with sha256" in checks["node_artifact"].message
+
+
+def test_node_artifact_validation_uses_stored_copy_when_original_is_removed(tmp_path):
+    artifact_path = tmp_path / "source.txt"
+    workflow_path = tmp_path / "stored_artifact_workflow.yaml"
+    workflow_path.write_text(
+        f"""
+id: stored-artifact-workflow
+entrypoint: writer
+nodes:
+  writer:
+    type: tool
+    artifacts:
+      - name: note
+        path: "{artifact_path.as_posix()}"
+        content_type: text/plain
+    tool:
+      adapter: shell
+      command: >-
+        python -c "from pathlib import Path; import sys; Path(sys.argv[1]).write_text('stable copy', encoding='utf-8')" {artifact_path.as_posix()}
+validations:
+  - type: run_status
+    equals: completed
+  - type: node_artifact
+    node: writer
+    name: note
+    exists: true
+""".strip(),
+        encoding="utf-8",
+    )
+    store = RunStore(tmp_path / "runs.sqlite")
+    workflow = load_workflow(workflow_path)
+    result = run_workflow(workflow, {}, store=store)
+    artifact_path.unlink()
+
+    verification = validate_stored_run(result.run_id, store=store)
+
+    assert verification.status == "passed"
+    checks = {check.type: check for check in verification.checks}
+    assert checks["node_artifact"].status == "passed"
+
+
+def test_node_artifact_validation_detects_hash_mismatch_from_persisted_evidence(tmp_path):
+    artifact_path = tmp_path / "mutable.txt"
+    artifact_path.write_text("original", encoding="utf-8")
+    store = RunStore(tmp_path / "runs.sqlite")
+    store.save_run(
+        StoredRun(
+            run_id="run-artifact-hash",
+            workflow_id="manual-artifact",
+            status="completed",
+            inputs={},
+            outputs={"writer": {"result": "ok"}},
+        )
+    )
+    store.add_event(
+        NodeEvent(
+            run_id="run-artifact-hash",
+            node_id="writer",
+            status="completed",
+            input={},
+            output={"result": "ok"},
+            metadata={
+                "artifacts": [
+                    {
+                        "name": "note",
+                        "path": artifact_path.as_posix(),
+                        "content_type": "text/plain",
+                        "exists": True,
+                        "size_bytes": len("original"),
+                        "sha256": hashlib.sha256(b"original").hexdigest(),
+                    }
+                ]
+            },
+        )
+    )
+    artifact_path.write_text("changed", encoding="utf-8")
+    workflow = Workflow(
+        id="manual-artifact",
+        name="Manual Artifact",
+        version="0.1",
+        entrypoint="writer",
+        nodes=[WorkflowNode(id="writer", type="template", template="unused")],
+        edges=[],
+        validations=[
+            WorkflowValidation(
+                type="node_artifact",
+                config={"node": "writer", "name": "note", "exists": True},
+            )
+        ],
+    )
+
+    verification = validate_run("run-artifact-hash", workflow, store=store)
+
+    assert verification.status == "failed"
+    [check] = verification.checks
+    assert check.type == "node_artifact"
+    assert check.status == "failed"
+    assert "sha256 changed" in check.message
 
 
 def test_resume_workflow_skips_completed_nodes_and_reruns_failed_nodes(tmp_path):

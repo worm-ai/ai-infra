@@ -61,6 +61,10 @@ class RunStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
 
+    @property
+    def state_dir(self) -> Path:
+        return self.path.parent
+
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path)
         connection.row_factory = sqlite3.Row

@@ -12,7 +12,7 @@ class WorkflowValidationError(ValueError):
 
 
 TOP_LEVEL_FIELDS = {"id", "name", "version", "entrypoint", "nodes", "edges", "validations"}
-NODE_FIELDS = {"type", "template", "next", "tool", "config", "policy", "contract"}
+NODE_FIELDS = {"type", "template", "next", "tool", "config", "policy", "contract", "artifacts"}
 EDGE_FIELDS = {"from", "to"}
 SUPPORTED_NODE_TYPES = {"template", "react", "tool", "llm", "validation"}
 SUPPORTED_TOOL_ADAPTERS = {"python", "shell", "http"}
@@ -28,6 +28,7 @@ SUPPORTED_VALIDATION_TYPES = {
     "node_policy_outcome",
     "node_contract",
     "node_resume_action",
+    "node_artifact",
 }
 SUPPORTED_ON_FAILURE = {"halt", "continue"}
 SUPPORTED_POLICY_OUTCOMES = {
@@ -125,6 +126,7 @@ def validate_workflow(workflow: Workflow) -> None:
             _validate_tool_node(node)
         _validate_node_policy(node)
         _validate_node_contract(node)
+        _validate_node_artifacts(node)
         if node.next and node.next not in node_ids:
             raise WorkflowValidationError(f"node {node.id!r} next target {node.next!r} is missing")
 
@@ -190,6 +192,8 @@ def _node_config(node_data: dict[str, Any]) -> dict[str, Any]:
         config["policy"] = node_data["policy"]
     if "contract" in node_data:
         config["contract"] = node_data["contract"]
+    if "artifacts" in node_data:
+        config["artifacts"] = node_data["artifacts"]
     if "config" in node_data:
         if not isinstance(node_data["config"], dict):
             raise WorkflowValidationError("node config must be a mapping")
@@ -334,6 +338,30 @@ def _validate_node_contract(node: WorkflowNode) -> None:
             )
 
 
+def _validate_node_artifacts(node: WorkflowNode) -> None:
+    artifacts = node.config.get("artifacts")
+    if artifacts is None:
+        return
+    if not isinstance(artifacts, list):
+        raise WorkflowValidationError(f"node {node.id!r} artifacts must be a list")
+    seen_names: set[str] = set()
+    for index, artifact in enumerate(artifacts):
+        context = f"node {node.id!r} artifact[{index}]"
+        if not isinstance(artifact, dict):
+            raise WorkflowValidationError(f"{context} must be a mapping")
+        _reject_unknown_fields(artifact, {"name", "path", "content_type"}, context)
+        name = artifact.get("name")
+        if not _is_non_empty_string(name):
+            raise WorkflowValidationError(f"{context} requires name")
+        if name in seen_names:
+            raise WorkflowValidationError(f"node {node.id!r} has duplicate artifact name {name!r}")
+        seen_names.add(name)
+        if not _is_non_empty_string(artifact.get("path")):
+            raise WorkflowValidationError(f"{context} requires path")
+        if not _is_non_empty_string(artifact.get("content_type")):
+            raise WorkflowValidationError(f"{context} requires content_type")
+
+
 def _validate_timeout(config: dict[str, Any], context: str) -> None:
     if "timeout_seconds" not in config:
         return
@@ -394,6 +422,16 @@ def _validate_run_validation(index: int, validation: WorkflowValidation, node_id
             raise WorkflowValidationError(f"{context} node_resume_action requires equals")
         if expected not in SUPPORTED_RESUME_ACTIONS:
             raise WorkflowValidationError(f"{context} node_resume_action has unsupported equals {expected!r}")
+        return
+
+    if validation.type == "node_artifact":
+        _reject_unknown_fields(validation.config, {"node", "name", "exists"}, context)
+        _validate_validation_node_reference(context, validation, node_ids)
+        if not _is_non_empty_string(validation.config.get("name")):
+            raise WorkflowValidationError(f"{context} node_artifact requires name")
+        exists = validation.config.get("exists")
+        if exists is not None and not isinstance(exists, bool):
+            raise WorkflowValidationError(f"{context} node_artifact exists must be a boolean")
         return
 
     _reject_unknown_fields(validation.config, {"node"}, context)

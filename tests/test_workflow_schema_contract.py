@@ -184,6 +184,109 @@ validations:
     assert workflow.validations[0].config == {"node": "only", "equals": "skipped"}
 
 
+def test_load_workflow_accepts_node_artifact_contract(tmp_path):
+    path = write_workflow(
+        tmp_path,
+        """
+id: artifact-contract
+entrypoint: writer
+nodes:
+  writer:
+    type: tool
+    artifacts:
+      - name: note
+        path: "{artifact_path}"
+        content_type: text/plain
+    tool:
+      adapter: shell
+      command: "python -c 'print(1)'"
+validations:
+  - type: node_artifact
+    node: writer
+    name: note
+    exists: true
+""",
+    )
+
+    workflow = load_workflow(path)
+    validate_workflow(workflow)
+
+    assert workflow.node_map["writer"].config["artifacts"] == [
+        {
+            "name": "note",
+            "path": "{artifact_path}",
+            "content_type": "text/plain",
+        }
+    ]
+    assert workflow.validations[0].type == "node_artifact"
+    assert workflow.validations[0].config == {"node": "writer", "name": "note", "exists": True}
+
+
+@pytest.mark.parametrize(
+    ("artifacts", "message"),
+    [
+        (
+            """
+name: note
+path: "{artifact_path}"
+content_type: text/plain
+""",
+            "node 'writer' artifacts must be a list",
+        ),
+        (
+            """
+- path: "{artifact_path}"
+  content_type: text/plain
+""",
+            "node 'writer' artifact[0] requires name",
+        ),
+        (
+            """
+- name: note
+  content_type: text/plain
+""",
+            "node 'writer' artifact[0] requires path",
+        ),
+        (
+            """
+- name: note
+  path: "{artifact_path}"
+""",
+            "node 'writer' artifact[0] requires content_type",
+        ),
+        (
+            """
+- name: note
+  path: "{artifact_path}"
+  content_type: text/plain
+  remote_store: s3
+""",
+            "node 'writer' artifact[0] has unsupported field 'remote_store'",
+        ),
+    ],
+)
+def test_validate_workflow_rejects_invalid_artifact_contract(tmp_path, artifacts, message):
+    path = write_workflow(
+        tmp_path,
+        f"""
+id: bad-artifact-contract
+entrypoint: writer
+nodes:
+  writer:
+    type: tool
+    artifacts:
+{_indent(artifacts, spaces=6)}
+    tool:
+      adapter: shell
+      command: "python -c 'print(1)'"
+""",
+    )
+    workflow = load_workflow(path)
+
+    with pytest.raises(WorkflowValidationError, match=re.escape(message)):
+        validate_workflow(workflow)
+
+
 @pytest.mark.parametrize(
     ("contract", "message"),
     [
@@ -401,6 +504,22 @@ nodes:
   equals: reused
 """,
             "validation[0] node_resume_action has unsupported equals 'reused'",
+        ),
+        (
+            """
+- type: node_artifact
+  node: only
+""",
+            "validation[0] node_artifact requires name",
+        ),
+        (
+            """
+- type: node_artifact
+  node: only
+  name: note
+  exists: present
+""",
+            "validation[0] node_artifact exists must be a boolean",
         ),
     ],
 )

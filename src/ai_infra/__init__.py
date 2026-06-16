@@ -1,3 +1,4 @@
+from .artifacts import EvidenceBundle, export_evidence_bundle
 from .config import Workflow, WorkflowValidationError, load_workflow, load_workflow_from_source, validate_workflow
 from .layers import DagWorkflow, PlanExecAgent, ReActAgent, SuperAgent
 from .reporting import build_run_report
@@ -14,6 +15,7 @@ from .tools import ToolExecution, ToolRegistry, default_tool_registry, execute_t
 
 __all__ = [
     "DagWorkflow",
+    "EvidenceBundle",
     "PlanExecAgent",
     "ReActAgent",
     "RunResult",
@@ -26,6 +28,7 @@ __all__ = [
     "build_run_report",
     "default_tool_registry",
     "execute_tool",
+    "export_evidence_bundle",
     "get_run",
     "load_workflow",
     "load_workflow_from_source",

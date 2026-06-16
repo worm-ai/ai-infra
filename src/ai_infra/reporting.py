@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .artifacts import event_artifacts
 from .runtime import default_store
 from .store import NodeEvent, RunProvenance, RunStore
 
@@ -32,6 +33,9 @@ def build_run_report(run_id: str, store: RunStore | None = None) -> dict[str, An
     resume_summary = _resume_summary(timeline)
     if resume_summary is not None:
         summary["resume"] = resume_summary
+    artifact_summary = _artifact_summary(timeline)
+    if artifact_summary is not None:
+        summary["artifacts"] = artifact_summary
 
     return {
         "run_id": run.run_id,
@@ -89,6 +93,7 @@ def _node_report(index: int, events: list[NodeEvent]) -> dict[str, Any]:
         "tool": _tool_report(event.output),
         "contract": _contract_report(event),
         "resume": _resume_report(event),
+        "artifacts": _artifact_report(event),
     }
 
 
@@ -165,6 +170,27 @@ def _resume_report(event: NodeEvent) -> dict[str, Any] | None:
     if not isinstance(resume, dict):
         return None
     return resume
+
+
+def _artifact_report(event: NodeEvent) -> list[dict[str, Any]]:
+    return event_artifacts(event)
+
+
+def _artifact_summary(timeline: list[dict[str, Any]]) -> dict[str, int] | None:
+    counts = {"declared": 0, "present": 0, "missing": 0}
+    for node in timeline:
+        artifacts = node.get("artifacts")
+        if not isinstance(artifacts, list):
+            continue
+        for artifact in artifacts:
+            if not isinstance(artifact, dict):
+                continue
+            counts["declared"] += 1
+            if artifact.get("exists") is True:
+                counts["present"] += 1
+            else:
+                counts["missing"] += 1
+    return counts if counts["declared"] else None
 
 
 def _resume_summary(timeline: list[dict[str, Any]]) -> dict[str, int] | None:

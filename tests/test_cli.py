@@ -2,6 +2,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+import zipfile
 
 
 def run_cli(*args, state_dir):
@@ -353,3 +354,105 @@ validations:
     assert verify.returncode == 0
     checks = {check["type"]: check for check in json.loads(verify.stdout)["verification"]["checks"]}
     assert checks["node_resume_action"]["status"] == "passed"
+
+
+def test_cli_artifact_report_verify_and_export_bundle(tmp_path):
+    artifact_path = tmp_path / "cli_artifact.txt"
+    workflow_path = tmp_path / "cli_artifact_workflow.yaml"
+    input_path = tmp_path / "cli_artifact_input.json"
+    workflow_path.write_text(
+        f"""
+id: cli-artifact-workflow
+entrypoint: writer
+nodes:
+  writer:
+    type: tool
+    artifacts:
+      - name: note
+        path: "{artifact_path.as_posix()}"
+        content_type: text/plain
+    tool:
+      adapter: shell
+      command: >-
+        python -c "from pathlib import Path; import sys; path=Path(sys.argv[1]); path.write_text(sys.argv[2], encoding='utf-8'); print(path)" {artifact_path.as_posix()} "{{topic}} artifact"
+validations:
+  - type: run_status
+    equals: completed
+  - type: node_artifact
+    node: writer
+    name: note
+    exists: true
+""".strip(),
+        encoding="utf-8",
+    )
+    input_path.write_text(json.dumps({"topic": "ABH"}), encoding="utf-8")
+
+    validate = run_cli("validate", str(workflow_path), state_dir=tmp_path)
+    assert validate.returncode == 0
+
+    run = run_cli("run", str(workflow_path), "--input-file", str(input_path), state_dir=tmp_path)
+    assert run.returncode == 0
+    run_id = json.loads(run.stdout)["run"]["run_id"]
+
+    report = run_cli("report", run_id, state_dir=tmp_path)
+    assert report.returncode == 0
+    report_payload = json.loads(report.stdout)
+    assert report_payload["report"]["summary"]["artifacts"] == {
+        "declared": 1,
+        "present": 1,
+        "missing": 0,
+    }
+
+    verify = run_cli("verify", run_id, state_dir=tmp_path)
+    assert verify.returncode == 0
+    checks = {check["type"]: check for check in json.loads(verify.stdout)["verification"]["checks"]}
+    assert checks["node_artifact"]["status"] == "passed"
+
+    bundle = run_cli("export-bundle", run_id, "--output-dir", str(tmp_path / "bundles"), state_dir=tmp_path)
+    assert bundle.returncode == 0
+    bundle_payload = json.loads(bundle.stdout)
+    bundle_path = Path(bundle_payload["bundle"]["path"])
+    assert bundle_path.exists()
+    assert bundle_path.name == f"{run_id}-evidence-bundle.zip"
+
+    with zipfile.ZipFile(bundle_path) as archive:
+        names = set(archive.namelist())
+        assert {
+            "manifest.json",
+            "report.json",
+            "workflow_snapshot.yaml",
+            "inputs.json",
+            "events.json",
+            "artifacts/writer/note/cli_artifact.txt",
+        }.issubset(names)
+        manifest = json.loads(archive.read("manifest.json"))
+        assert manifest["run_id"] == run_id
+        assert manifest["workflow_id"] == "cli-artifact-workflow"
+        assert manifest["artifacts"][0]["archive_path"] == "artifacts/writer/note/cli_artifact.txt"
+        assert archive.read("artifacts/writer/note/cli_artifact.txt").decode("utf-8") == "ABH artifact"
+
+
+def test_cli_example_artifact_workflow_uses_input_artifact_path(tmp_path):
+    artifact_path = tmp_path / "isolated_artifact.txt"
+    input_path = tmp_path / "artifact_input.json"
+    input_path.write_text(
+        json.dumps({"topic": "ABH", "artifact_path": artifact_path.as_posix()}),
+        encoding="utf-8",
+    )
+
+    run = run_cli(
+        "run",
+        "examples/artifact_workflow.yaml",
+        "--input-file",
+        str(input_path),
+        state_dir=tmp_path / "state",
+    )
+    assert run.returncode == 0
+    run_id = json.loads(run.stdout)["run"]["run_id"]
+
+    report = run_cli("report", run_id, state_dir=tmp_path / "state")
+    assert report.returncode == 0
+    artifact = json.loads(report.stdout)["report"]["timeline"][0]["artifacts"][0]
+
+    assert artifact["path"] == artifact_path.as_posix()
+    assert artifact_path.read_text(encoding="utf-8") == "ABH artifact evidence"

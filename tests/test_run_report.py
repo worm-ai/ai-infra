@@ -1,3 +1,4 @@
+import hashlib
 from pathlib import Path
 
 from ai_infra import build_run_report, load_workflow, resume_workflow, run_workflow
@@ -378,3 +379,66 @@ validations:
     assert report["timeline"][0]["resume"]["source_event_status"] == "completed"
     assert report["timeline"][1]["status"] == "completed"
     assert report["timeline"][1]["resume"]["action"] == "rerun"
+
+
+def test_build_run_report_summarizes_artifact_evidence(tmp_path):
+    artifact_path = tmp_path / "report-artifact.txt"
+
+    def write_artifact(args):
+        path = Path(args["path"])
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(args["content"], encoding="utf-8")
+        return {"path": path.as_posix()}
+
+    default_tool_registry.register_python("report_write_artifact", write_artifact)
+    workflow_path = tmp_path / "report_artifact_workflow.yaml"
+    workflow_path.write_text(
+        f"""
+id: report-artifact-workflow
+entrypoint: writer
+nodes:
+  writer:
+    type: tool
+    artifacts:
+      - name: report
+        path: "{artifact_path.as_posix()}"
+        content_type: text/plain
+    tool:
+      adapter: python
+      name: report_write_artifact
+      args:
+        path: "{artifact_path.as_posix()}"
+        content: "ABH artifact"
+validations:
+  - type: run_status
+    equals: completed
+  - type: node_artifact
+    node: writer
+    name: report
+    exists: true
+""".strip(),
+        encoding="utf-8",
+    )
+    store = RunStore(tmp_path / "runs.sqlite")
+    workflow = load_workflow(workflow_path)
+    result = run_workflow(workflow, {}, store=store)
+
+    report = build_run_report(result.run_id, store=store)
+
+    assert report["summary"]["artifacts"] == {
+        "declared": 1,
+        "present": 1,
+        "missing": 0,
+    }
+    [node] = report["timeline"]
+    assert node["artifacts"] == [
+        {
+            "name": "report",
+            "path": artifact_path.as_posix(),
+            "stored_path": (tmp_path / "artifacts" / result.run_id / "writer" / "report" / "report-artifact.txt").as_posix(),
+            "content_type": "text/plain",
+            "exists": True,
+            "size_bytes": len("ABH artifact"),
+            "sha256": hashlib.sha256(b"ABH artifact").hexdigest(),
+        }
+    ]
