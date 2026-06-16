@@ -1,0 +1,54 @@
+id: validation-assertion-workflow
+name: Validation Assertion Workflow
+version: "0.1"
+entrypoint: python_echo
+nodes:
+  python_echo:
+    type: tool
+    contract:
+      output:
+        type: object
+        required_fields:
+          result: string
+          adapter: string
+    tool:
+      adapter: python
+      name: echo
+      args:
+        value: "{topic}"
+validations:
+  - type: run_status
+    equals: completed
+  - type: assertion
+    source: node_output
+    node: python_echo
+    path: result
+    equals: ABH
+  - type: assertion
+    source: node_output
+    node: python_echo
+    path: result
+    contains: B
+  - type: assertion
+    source: tool_invocation
+    node: python_echo
+    path: input.args.value
+    equals: ABH
+  - type: assertion
+    source: tool_invocation
+    node: python_echo
+    path: reserved
+    equals: false
+  - type: assertion
+    source: node_metadata
+    node: python_echo
+    path: contract.output.status
+    equals: passed
+  - type: assertion
+    source: report
+    path: summary.total_events
+    equals: 1
+  - type: assertion
+    source: report
+    path: timeline.0.tool.identity
+    equals: echo

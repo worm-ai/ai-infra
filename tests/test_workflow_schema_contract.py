@@ -290,6 +290,50 @@ validations:
     }
 
 
+def test_load_workflow_accepts_validation_assertion_contract(tmp_path):
+    path = write_workflow(
+        tmp_path,
+        """
+id: assertion-contract
+entrypoint: python_echo
+nodes:
+  python_echo:
+    type: tool
+    tool:
+      adapter: python
+      name: echo
+      args:
+        value: "{topic}"
+validations:
+  - type: assertion
+    source: node_output
+    node: python_echo
+    path: result
+    equals: ABH
+  - type: assertion
+    source: tool_invocation
+    node: python_echo
+    path: reserved
+    equals: false
+  - type: assertion
+    source: run
+    path: status
+    equals: completed
+""",
+    )
+
+    workflow = load_workflow(path)
+    validate_workflow(workflow)
+
+    assert workflow.validations[0].type == "assertion"
+    assert workflow.validations[0].config == {
+        "source": "node_output",
+        "node": "python_echo",
+        "path": "result",
+        "equals": "ABH",
+    }
+
+
 def test_load_workflow_accepts_aborted_governance_validation(tmp_path):
     path = write_workflow(
         tmp_path,
@@ -722,6 +766,43 @@ nodes:
   equals: remote_cancelled
 """,
             "validation[0] node_governance has unsupported equals 'remote_cancelled'",
+        ),
+        (
+            """
+- type: assertion
+  source: node_output
+  node: only
+  path: result
+""",
+            "validation[0] assertion requires one assertion operator",
+        ),
+        (
+            """
+- type: assertion
+  source: tool_invocation
+  path: status
+  equals: completed
+""",
+            "validation[0] assertion source 'tool_invocation' requires node",
+        ),
+        (
+            """
+- type: assertion
+  source: shell
+  path: status
+  equals: completed
+""",
+            "validation[0] assertion has unsupported source 'shell'",
+        ),
+        (
+            """
+- type: assertion
+  source: run
+  path: status
+  equals: completed
+  contains: comp
+""",
+            "validation[0] assertion must use exactly one assertion operator",
         ),
     ],
 )

@@ -9,6 +9,10 @@ from .store import NodeEvent, RunProvenance, RunStore
 
 def build_run_report(run_id: str, store: RunStore | None = None) -> dict[str, Any]:
     run = (store or default_store()).get_run(run_id)
+    return build_stored_run_report(run)
+
+
+def build_stored_run_report(run: Any) -> dict[str, Any]:
     timeline = [
         _node_report(index, events)
         for index, events in enumerate(_events_by_node(run.events), start=1)

@@ -137,6 +137,7 @@ def get_run(run_id: str, store: RunStore | None = None) -> StoredRun:
 
 
 def validate_run(run_id: str, workflow: Workflow, store: RunStore | None = None) -> VerificationResult:
+    validate_workflow(workflow)
     run_store = store or default_store()
     stored = run_store.get_run(run_id)
     checks = _evaluate_workflow_validations(workflow, stored)
@@ -223,6 +224,8 @@ def _evaluate_workflow_source_integrity(run: StoredRun) -> VerificationCheck:
 
 
 def _evaluate_validation(validation_type: str, config: dict[str, Any], run: StoredRun) -> VerificationCheck:
+    if validation_type == "assertion":
+        return _evaluate_assertion_validation(config, run)
     if validation_type == "run_status":
         expected = config.get("equals")
         passed = run.status == expected
@@ -358,6 +361,187 @@ def _evaluate_validation(validation_type: str, config: dict[str, Any], run: Stor
             message=f"node {node_id!r} governance status is {actual!r}, expected {expected!r}",
         )
     return VerificationCheck(type=validation_type, status="failed", message="unsupported validation type")
+
+
+def _evaluate_assertion_validation(config: dict[str, Any], run: StoredRun) -> VerificationCheck:
+    source = str(config.get("source", ""))
+    node_id = config.get("node")
+    path = str(config.get("path", ""))
+    display_path = _assertion_display_path(source, node_id, path)
+    source_value, source_found = _assertion_source_value(source, node_id, run)
+    if not source_found:
+        return VerificationCheck(
+            type="assertion",
+            status="failed",
+            message=f"assertion {display_path} source is missing",
+        )
+
+    actual, found = _lookup_assertion_path(source_value, path)
+    if "exists" in config:
+        expected_exists = bool(config.get("exists"))
+        passed = found is expected_exists
+        if passed:
+            state = "exists" if found else "is absent"
+            return VerificationCheck(
+                type="assertion",
+                status="passed",
+                message=f"assertion {display_path} {state} as expected",
+            )
+        state = "exists" if found else "is missing"
+        return VerificationCheck(
+            type="assertion",
+            status="failed",
+            message=f"assertion {display_path} {state}, expected exists {expected_exists!r}",
+        )
+
+    if not found:
+        return VerificationCheck(
+            type="assertion",
+            status="failed",
+            message=f"assertion {display_path} is missing",
+        )
+
+    if "equals" in config:
+        expected = config.get("equals")
+        passed = actual == expected
+        return VerificationCheck(
+            type="assertion",
+            status="passed" if passed else "failed",
+            message=f"assertion {display_path} actual {actual!r}, expected {expected!r}",
+        )
+
+    if "contains" in config:
+        expected = config.get("contains")
+        passed = _assertion_contains(actual, expected)
+        return VerificationCheck(
+            type="assertion",
+            status="passed" if passed else "failed",
+            message=f"assertion {display_path} actual {actual!r} contains {expected!r}",
+        )
+
+    if "value_type" in config:
+        expected_type = str(config.get("value_type"))
+        actual_type = _assertion_type_name(actual)
+        passed = _assertion_matches_type(actual, expected_type)
+        return VerificationCheck(
+            type="assertion",
+            status="passed" if passed else "failed",
+            message=f"assertion {display_path} type is {actual_type!r}, expected {expected_type!r}",
+        )
+
+    return VerificationCheck(
+        type="assertion",
+        status="failed",
+        message=f"assertion {display_path} has no supported operator",
+    )
+
+
+def _assertion_source_value(
+    source: str,
+    node_id: Any,
+    run: StoredRun,
+) -> tuple[Any, bool]:
+    if source == "run":
+        return {
+            "run_id": run.run_id,
+            "workflow_id": run.workflow_id,
+            "status": run.status,
+            "inputs": run.inputs,
+            "outputs": run.outputs,
+        }, True
+    if source == "report":
+        from .reporting import build_stored_run_report
+
+        return build_stored_run_report(run), True
+    if source in {"node_output", "node_metadata", "tool_invocation"}:
+        event = _latest_node_event(run.events, str(node_id))
+        if event is None:
+            return None, False
+        if source == "node_output":
+            return event.output, True
+        if source == "node_metadata":
+            return event.metadata, True
+        if isinstance(event.output, dict) and isinstance(event.output.get("tool_invocation"), dict):
+            return event.output["tool_invocation"], True
+        return None, False
+    return None, False
+
+
+def _latest_node_event(events: list[NodeEvent], node_id: str) -> NodeEvent | None:
+    for event in reversed(events):
+        if event.node_id == node_id:
+            return event
+    return None
+
+
+def _lookup_assertion_path(value: Any, path: str) -> tuple[Any, bool]:
+    current = value
+    for part in path.split("."):
+        if isinstance(current, dict):
+            if part not in current:
+                return None, False
+            current = current[part]
+            continue
+        if isinstance(current, list) and part.isdecimal():
+            index = int(part)
+            if index >= len(current):
+                return None, False
+            current = current[index]
+            continue
+        return None, False
+    return current, True
+
+
+def _assertion_display_path(source: str, node_id: Any, path: str) -> str:
+    if source in {"node_output", "node_metadata", "tool_invocation"}:
+        return f"{source}[{str(node_id)!r}].{path}"
+    return f"{source}.{path}"
+
+
+def _assertion_contains(actual: Any, expected: Any) -> bool:
+    if isinstance(actual, str):
+        return isinstance(expected, str) and expected in actual
+    if isinstance(actual, list | tuple | set):
+        return expected in actual
+    if isinstance(actual, dict):
+        return expected in actual
+    return False
+
+
+def _assertion_type_name(value: Any) -> str:
+    if isinstance(value, dict):
+        return "object"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, int):
+        return "integer"
+    if isinstance(value, float):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    if value is None:
+        return "null"
+    return type(value).__name__
+
+
+def _assertion_matches_type(value: Any, expected_type: str) -> bool:
+    if expected_type == "object":
+        return isinstance(value, dict)
+    if expected_type == "array":
+        return isinstance(value, list)
+    if expected_type == "string":
+        return isinstance(value, str)
+    if expected_type == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if expected_type == "number":
+        return (isinstance(value, int | float)) and not isinstance(value, bool)
+    if expected_type == "boolean":
+        return isinstance(value, bool)
+    if expected_type == "null":
+        return value is None
+    return False
 
 
 def _validate_resume_compatibility(stored: StoredRun, workflow: Workflow) -> None:

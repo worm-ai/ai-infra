@@ -555,6 +555,61 @@ validations:
     assert "node 'second' governance status is 'budget_exhausted', expected 'budget_exhausted'" in checks
 
 
+def test_cli_validation_assertions_report_pass_and_failure(tmp_path):
+    validate = run_cli("validate", "examples/validation_assertion_workflow.yaml", state_dir=tmp_path)
+    assert validate.returncode == 0
+    assert json.loads(validate.stdout)["ok"] is True
+
+    run = run_cli(
+        "run",
+        "examples/validation_assertion_workflow.yaml",
+        "--input-file",
+        "examples/validation_assertion_input.json",
+        state_dir=tmp_path,
+    )
+    assert run.returncode == 0
+    run_id = json.loads(run.stdout)["run"]["run_id"]
+
+    verify = run_cli("verify", run_id, state_dir=tmp_path)
+    assert verify.returncode == 0
+    verification = json.loads(verify.stdout)["verification"]
+    assert verification["status"] == "passed"
+    assert any(
+        check["type"] == "assertion"
+        and check["status"] == "passed"
+        and "report.summary.total_events" in check["message"]
+        for check in verification["checks"]
+    )
+
+    failure_validate = run_cli(
+        "validate",
+        "examples/validation_assertion_failure_workflow.yaml",
+        state_dir=tmp_path,
+    )
+    assert failure_validate.returncode == 0
+
+    failure_run = run_cli(
+        "run",
+        "examples/validation_assertion_failure_workflow.yaml",
+        "--input-file",
+        "examples/validation_assertion_input.json",
+        state_dir=tmp_path,
+    )
+    assert failure_run.returncode == 0
+    failure_run_id = json.loads(failure_run.stdout)["run"]["run_id"]
+
+    failure_verify = run_cli("verify", failure_run_id, state_dir=tmp_path)
+    assert failure_verify.returncode == 1
+    failure_verification = json.loads(failure_verify.stdout)["verification"]
+    assert failure_verification["status"] == "failed"
+    assert any(
+        check["type"] == "assertion"
+        and check["status"] == "failed"
+        and "expected 'expected-other-value'" in check["message"]
+        for check in failure_verification["checks"]
+    )
+
+
 def test_cli_store_health_runs_and_cleanup_dry_run(tmp_path):
     first = run_cli(
         "run",

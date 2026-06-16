@@ -21,6 +21,8 @@ SUPPORTED_CONTRACT_TYPES = {"object", "array", "string", "integer", "number", "b
 SUPPORTED_CONTRACT_STATUSES = {"passed", "failed"}
 SUPPORTED_RESUME_ACTIONS = {"run", "rerun", "skipped"}
 SUPPORTED_GOVERNANCE_STATUSES = {"within_limits", "timeout", "budget_exhausted", "aborted"}
+SUPPORTED_ASSERTION_SOURCES = {"run", "node_output", "node_metadata", "tool_invocation", "report"}
+SUPPORTED_ASSERTION_OPERATORS = {"equals", "contains", "exists", "value_type"}
 SUPPORTED_VALIDATION_TYPES = {
     "run_status",
     "node_completed",
@@ -31,6 +33,7 @@ SUPPORTED_VALIDATION_TYPES = {
     "node_resume_action",
     "node_artifact",
     "node_governance",
+    "assertion",
 }
 SUPPORTED_ON_FAILURE = {"halt", "continue"}
 SUPPORTED_POLICY_OUTCOMES = {
@@ -443,6 +446,10 @@ def _validate_run_validation(index: int, validation: WorkflowValidation, node_id
     if validation.type not in SUPPORTED_VALIDATION_TYPES:
         raise WorkflowValidationError(f"{context} has unsupported type {validation.type!r}")
 
+    if validation.type == "assertion":
+        _validate_assertion_validation(context, validation, node_ids)
+        return
+
     if validation.type == "run_status":
         _reject_unknown_fields(validation.config, {"equals"}, context)
         expected = validation.config.get("equals")
@@ -516,6 +523,61 @@ def _validate_run_validation(index: int, validation: WorkflowValidation, node_id
 
     _reject_unknown_fields(validation.config, {"node"}, context)
     _validate_validation_node_reference(context, validation, node_ids)
+
+
+def _validate_assertion_validation(
+    context: str,
+    validation: WorkflowValidation,
+    node_ids: set[str],
+) -> None:
+    _reject_unknown_fields(
+        validation.config,
+        {"source", "node", "path", *SUPPORTED_ASSERTION_OPERATORS},
+        context,
+    )
+
+    source = validation.config.get("source")
+    if not _is_non_empty_string(source):
+        raise WorkflowValidationError(f"{context} assertion requires source")
+    if source not in SUPPORTED_ASSERTION_SOURCES:
+        raise WorkflowValidationError(f"{context} assertion has unsupported source {source!r}")
+
+    path = validation.config.get("path")
+    if not _is_non_empty_string(path):
+        raise WorkflowValidationError(f"{context} assertion requires path")
+    _validate_assertion_path(context, str(path))
+
+    operators = [operator for operator in SUPPORTED_ASSERTION_OPERATORS if operator in validation.config]
+    if not operators:
+        raise WorkflowValidationError(f"{context} assertion requires one assertion operator")
+    if len(operators) > 1:
+        raise WorkflowValidationError(f"{context} assertion must use exactly one assertion operator")
+
+    if source in {"node_output", "node_metadata", "tool_invocation"}:
+        node_id = validation.config.get("node")
+        if not _is_non_empty_string(node_id):
+            raise WorkflowValidationError(f"{context} assertion source {source!r} requires node")
+        if node_id not in node_ids:
+            raise WorkflowValidationError(f"{context} references missing node {node_id!r}")
+    elif "node" in validation.config:
+        raise WorkflowValidationError(f"{context} assertion source {source!r} does not accept node")
+
+    if "exists" in validation.config and not isinstance(validation.config["exists"], bool):
+        raise WorkflowValidationError(f"{context} assertion exists must be a boolean")
+    if "value_type" in validation.config:
+        expected_type = validation.config["value_type"]
+        if not _is_non_empty_string(expected_type):
+            raise WorkflowValidationError(f"{context} assertion value_type requires a type")
+        if expected_type not in SUPPORTED_CONTRACT_TYPES:
+            raise WorkflowValidationError(
+                f"{context} assertion value_type has unsupported type {expected_type!r}"
+            )
+
+
+def _validate_assertion_path(context: str, path: str) -> None:
+    parts = path.split(".")
+    if any(not part.strip() for part in parts):
+        raise WorkflowValidationError(f"{context} assertion path must be dot-separated non-empty segments")
 
 
 def _validate_validation_node_reference(

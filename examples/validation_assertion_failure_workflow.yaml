@@ -1,0 +1,20 @@
+id: validation-assertion-failure-workflow
+name: Validation Assertion Failure Workflow
+version: "0.1"
+entrypoint: python_echo
+nodes:
+  python_echo:
+    type: tool
+    tool:
+      adapter: python
+      name: echo
+      args:
+        value: "{topic}"
+validations:
+  - type: run_status
+    equals: completed
+  - type: assertion
+    source: node_output
+    node: python_echo
+    path: result
+    equals: expected-other-value

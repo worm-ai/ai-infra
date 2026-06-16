@@ -14,6 +14,7 @@ from ai_infra import (
     validate_stored_run,
 )
 from ai_infra.config import Workflow, WorkflowNode, WorkflowValidation
+from ai_infra.config import WorkflowValidationError
 from ai_infra.store import NodeEvent, RunStore, StoredRun
 from ai_infra.tools import default_tool_registry
 
@@ -742,6 +743,299 @@ validations:
     checks = {check.type: check for check in verification.checks}
     assert checks["node_governance"].status == "passed"
     assert "governance status is 'timeout'" in checks["node_governance"].message
+
+
+def test_validation_assertions_pass_against_persisted_run_evidence(tmp_path):
+    store = RunStore(tmp_path / "runs.sqlite")
+    workflow_path = tmp_path / "assertion_workflow.yaml"
+    workflow_path.write_text(
+        """
+id: assertion-workflow
+entrypoint: python_echo
+nodes:
+  python_echo:
+    type: tool
+    contract:
+      output:
+        type: object
+        required_fields:
+          result: string
+          adapter: string
+    tool:
+      adapter: python
+      name: echo
+      args:
+        value: "{topic}"
+validations:
+  - type: assertion
+    source: node_output
+    node: python_echo
+    path: result
+    equals: ABH
+  - type: assertion
+    source: node_output
+    node: python_echo
+    path: result
+    contains: B
+  - type: assertion
+    source: node_output
+    node: python_echo
+    path: adapter
+    value_type: string
+  - type: assertion
+    source: node_output
+    node: python_echo
+    path: result
+    exists: true
+  - type: assertion
+    source: tool_invocation
+    node: python_echo
+    path: input.args.value
+    equals: ABH
+  - type: assertion
+    source: tool_invocation
+    node: python_echo
+    path: reserved
+    equals: false
+  - type: assertion
+    source: node_metadata
+    node: python_echo
+    path: contract.output.status
+    equals: passed
+  - type: assertion
+    source: run
+    path: outputs.python_echo.result
+    equals: ABH
+  - type: assertion
+    source: report
+    path: summary.total_events
+    equals: 1
+  - type: assertion
+    source: report
+    path: timeline.0.tool.input.args.value
+    equals: ABH
+""".strip(),
+        encoding="utf-8",
+    )
+    workflow = load_workflow(workflow_path)
+
+    result = run_workflow(workflow, {"topic": "ABH"}, store=store)
+    verification = validate_stored_run(result.run_id, store=store)
+
+    assert verification.status == "passed"
+    assertion_checks = [check for check in verification.checks if check.type == "assertion"]
+    assert len(assertion_checks) == 10
+    assert {check.status for check in assertion_checks} == {"passed"}
+    assert "tool_invocation['python_echo'].input.args.value" in assertion_checks[4].message
+    assert "report.summary.total_events" in assertion_checks[8].message
+
+
+def test_validation_assertion_mismatch_records_failure_evidence(tmp_path):
+    store = RunStore(tmp_path / "runs.sqlite")
+    workflow_path = tmp_path / "assertion_failure_workflow.yaml"
+    workflow_path.write_text(
+        """
+id: assertion-failure-workflow
+entrypoint: python_echo
+nodes:
+  python_echo:
+    type: tool
+    tool:
+      adapter: python
+      name: echo
+      args:
+        value: "{topic}"
+validations:
+  - type: assertion
+    source: node_output
+    node: python_echo
+    path: result
+    equals: expected-other-value
+""".strip(),
+        encoding="utf-8",
+    )
+    workflow = load_workflow(workflow_path)
+
+    result = run_workflow(workflow, {"topic": "ABH"}, store=store)
+    verification = validate_stored_run(result.run_id, store=store)
+
+    assert result.status == "completed"
+    assert verification.status == "failed"
+    [integrity_check, assertion_check] = verification.checks
+    assert integrity_check.status == "passed"
+    assert assertion_check.type == "assertion"
+    assert assertion_check.status == "failed"
+    assert "node_output['python_echo'].result" in assertion_check.message
+    assert "actual 'ABH'" in assertion_check.message
+    assert "expected 'expected-other-value'" in assertion_check.message
+
+
+def test_validation_assertion_missing_path_fails_with_localized_message(tmp_path):
+    store = RunStore(tmp_path / "runs.sqlite")
+    workflow_path = tmp_path / "assertion_missing_path_workflow.yaml"
+    workflow_path.write_text(
+        """
+id: assertion-missing-path-workflow
+entrypoint: python_echo
+nodes:
+  python_echo:
+    type: tool
+    tool:
+      adapter: python
+      name: echo
+      args:
+        value: "{topic}"
+validations:
+  - type: assertion
+    source: tool_invocation
+    node: python_echo
+    path: output.missing
+    exists: true
+""".strip(),
+        encoding="utf-8",
+    )
+    workflow = load_workflow(workflow_path)
+
+    result = run_workflow(workflow, {"topic": "ABH"}, store=store)
+    verification = validate_stored_run(result.run_id, store=store)
+
+    assert verification.status == "failed"
+    assertion_check = verification.checks[-1]
+    assert assertion_check.type == "assertion"
+    assert assertion_check.status == "failed"
+    assert "tool_invocation['python_echo'].output.missing" in assertion_check.message
+    assert "is missing" in assertion_check.message
+
+
+def test_validate_run_rejects_invalid_assertion_schema_before_evaluation(tmp_path):
+    store = RunStore(tmp_path / "runs.sqlite")
+    run_workflow_source = """
+id: assertion-schema-bypass
+entrypoint: python_echo
+nodes:
+  python_echo:
+    type: tool
+    tool:
+      adapter: python
+      name: echo
+      args:
+        value: "{topic}"
+""".strip()
+    result = run_workflow(
+        load_workflow_from_source(run_workflow_source),
+        {"topic": "ABH"},
+        store=store,
+    )
+    invalid_workflow = Workflow(
+        id="assertion-schema-bypass",
+        name="Assertion Schema Bypass",
+        version="0.1",
+        entrypoint="python_echo",
+        nodes=[
+            WorkflowNode(
+                id="python_echo",
+                type="tool",
+                config={"tool": {"adapter": "python", "name": "echo", "args": {"value": "{topic}"}}},
+            )
+        ],
+        edges=[],
+        validations=[
+            WorkflowValidation(
+                type="assertion",
+                config={
+                    "source": "node_output",
+                    "node": "python_echo",
+                    "path": "missing",
+                    "exists": "false",
+                },
+            )
+        ],
+    )
+
+    try:
+        validate_run(result.run_id, invalid_workflow, store=store)
+    except WorkflowValidationError as exc:
+        assert "validation[0] assertion exists must be a boolean" in str(exc)
+    else:
+        raise AssertionError("validate_run should reject invalid assertion schema before evaluation")
+
+
+def test_report_assertions_use_the_same_shape_as_run_report(tmp_path):
+    store = RunStore(tmp_path / "runs.sqlite")
+    workflow_path = tmp_path / "assertion_report_governance_workflow.yaml"
+    workflow_path.write_text(
+        """
+id: assertion-report-governance
+entrypoint: first
+governance:
+  max_node_executions: 1
+nodes:
+  first:
+    type: template
+    next: second
+    template: "First {topic}"
+  second:
+    type: template
+    template: "Second {first}"
+validations:
+  - type: run_status
+    equals: failed
+  - type: assertion
+    source: report
+    path: summary.governance.budget_exhausted
+    equals: 1
+  - type: assertion
+    source: report
+    path: failure.governance_status
+    equals: budget_exhausted
+""".strip(),
+        encoding="utf-8",
+    )
+    workflow = load_workflow(workflow_path)
+
+    result = run_workflow(workflow, {"topic": "ABH"}, store=store)
+    verification = validate_stored_run(result.run_id, store=store)
+
+    assert verification.status == "passed"
+    messages = {check.message for check in verification.checks if check.type == "assertion"}
+    assert "assertion report.summary.governance.budget_exhausted actual 1, expected 1" in messages
+    assert (
+        "assertion report.failure.governance_status actual 'budget_exhausted', "
+        "expected 'budget_exhausted'"
+    ) in messages
+
+
+def test_validation_assertion_number_type_matches_integer_values(tmp_path):
+    store = RunStore(tmp_path / "runs.sqlite")
+    workflow_path = tmp_path / "assertion_number_type_workflow.yaml"
+    workflow_path.write_text(
+        """
+id: assertion-number-type
+entrypoint: python_echo
+nodes:
+  python_echo:
+    type: tool
+    tool:
+      adapter: python
+      name: echo
+      args:
+        value: 7
+validations:
+  - type: assertion
+    source: node_output
+    node: python_echo
+    path: result
+    value_type: number
+""".strip(),
+        encoding="utf-8",
+    )
+    workflow = load_workflow(workflow_path)
+
+    result = run_workflow(workflow, {}, store=store)
+    verification = validate_stored_run(result.run_id, store=store)
+
+    assert verification.status == "passed"
+    assert verification.checks[-1].message == "assertion node_output['python_echo'].result type is 'integer', expected 'number'"
 
 
 def test_run_workflow_aborts_downstream_nodes_when_execution_budget_is_exhausted(tmp_path):

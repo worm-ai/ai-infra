@@ -8,7 +8,7 @@ from .maintenance import (
     list_run_summaries,
     plan_retention_cleanup,
 )
-from .reporting import build_run_report
+from .reporting import build_run_report, build_stored_run_report
 from .runtime import (
     RunResult,
     VerificationResult,
@@ -44,6 +44,7 @@ __all__ = [
     "WorkflowValidationError",
     "apply_retention_cleanup",
     "build_run_report",
+    "build_stored_run_report",
     "build_tool_invocation",
     "default_tool_registry",
     "execute_tool",
