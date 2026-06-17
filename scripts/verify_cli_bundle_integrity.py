@@ -59,6 +59,59 @@ def main() -> int:
         wrong_shape_payload = _assert_failed(wrong_shape_result, "verify-bundle wrong document shapes")
         _assert_has_failed_check(wrong_shape_payload, "bundle_document_schema", "report.json")
 
+        status_summary_mismatch = temp_root / "status-summary-mismatch.zip"
+        _rewrite_bundle(
+            bundle_path,
+            status_summary_mismatch,
+            {"manifest.json": _tamper_manifest_status},
+        )
+        status_summary_result = _run_cli({}, detached_state_dir, "verify-bundle", str(status_summary_mismatch))
+        status_summary_payload = _assert_failed(
+            status_summary_result,
+            "verify-bundle status summary mismatch",
+        )
+        _assert_has_failed_check(status_summary_payload, "bundle_manifest_summary", "status")
+
+        redaction_summary_mismatch = temp_root / "redaction-summary-mismatch.zip"
+        _rewrite_bundle(
+            bundle_path,
+            redaction_summary_mismatch,
+            {"manifest.json": _tamper_manifest_redaction_summary},
+        )
+        redaction_summary_result = _run_cli({}, detached_state_dir, "verify-bundle", str(redaction_summary_mismatch))
+        redaction_summary_payload = _assert_failed(
+            redaction_summary_result,
+            "verify-bundle redaction summary mismatch",
+        )
+        _assert_has_failed_check(redaction_summary_payload, "bundle_manifest_summary", "redaction_summary")
+
+        input_summary_mismatch = temp_root / "input-summary-mismatch.zip"
+        _rewrite_bundle(
+            bundle_path,
+            input_summary_mismatch,
+            {"manifest.json": _tamper_manifest_input_summary},
+        )
+        input_summary_result = _run_cli({}, detached_state_dir, "verify-bundle", str(input_summary_mismatch))
+        input_summary_payload = _assert_failed(
+            input_summary_result,
+            "verify-bundle input summary mismatch",
+        )
+        _assert_has_failed_check(input_summary_payload, "bundle_manifest_summary", "verification_input_summary")
+
+        malformed_redaction_summary = temp_root / "malformed-redaction-summary.zip"
+        _rewrite_bundle(
+            bundle_path,
+            malformed_redaction_summary,
+            {"report.json": _tamper_report_malformed_redaction_summary},
+            refresh_manifest=True,
+        )
+        malformed_redaction_result = _run_cli({}, detached_state_dir, "verify-bundle", str(malformed_redaction_summary))
+        malformed_redaction_payload = _assert_failed(
+            malformed_redaction_result,
+            "verify-bundle malformed redaction summary",
+        )
+        _assert_has_failed_check(malformed_redaction_payload, "bundle_manifest_summary", "invalid")
+
         redaction_bundle = _export_redaction_bundle(state_dir, bundle_dir)
         leaked = temp_root / "redaction-leak.zip"
         _rewrite_bundle(
@@ -94,6 +147,10 @@ def main() -> int:
                 "tampered": tampered_payload["verification"]["status"],
                 "missing": missing_payload["verification"]["status"],
                 "wrong_shape": wrong_shape_payload["verification"]["status"],
+                "status_summary_mismatch": status_summary_payload["verification"]["status"],
+                "redaction_summary_mismatch": redaction_summary_payload["verification"]["status"],
+                "input_summary_mismatch": input_summary_payload["verification"]["status"],
+                "malformed_redaction_summary": malformed_redaction_payload["verification"]["status"],
                 "redaction_leak": leak_payload["verification"]["status"],
                 "redaction_metadata_leak": metadata_leak_payload["verification"]["status"],
             },
@@ -254,6 +311,33 @@ def _remove_snapshot_sensitive_paths(data: bytes) -> bytes:
   - AI_INFRA_TEST_TOKEN
 """,
     ).encode("utf-8")
+
+
+def _tamper_manifest_status(data: bytes) -> bytes:
+    manifest = json.loads(data)
+    manifest["status"] = "failed"
+    return _json_bytes(manifest)
+
+
+def _tamper_manifest_redaction_summary(data: bytes) -> bytes:
+    manifest = json.loads(data)
+    manifest["redaction_summary"] = {"redacted_nodes": 1, "redacted_values": 1}
+    return _json_bytes(manifest)
+
+
+def _tamper_manifest_input_summary(data: bytes) -> bytes:
+    manifest = json.loads(data)
+    manifest["verification_input_summary"] = {"type": "object", "keys": ["topic"]}
+    return _json_bytes(manifest)
+
+
+def _tamper_report_malformed_redaction_summary(data: bytes) -> bytes:
+    report = json.loads(data)
+    report["summary"]["redaction"] = {
+        "redacted_nodes": "not-int",
+        "redacted_values": 0,
+    }
+    return _json_bytes(report)
 
 
 def _json_bytes(value: Any) -> bytes:

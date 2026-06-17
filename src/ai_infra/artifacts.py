@@ -175,6 +175,7 @@ def verify_evidence_bundle(bundle_path: str | Path) -> EvidenceBundleVerificatio
         )
 
     _check_run_identity(manifest, documents, checks)
+    _check_manifest_summary(manifest, documents, checks)
     _check_redaction(manifest, documents, checks)
     status = "passed" if checks and all(check.status == "passed" for check in checks) else "failed"
     run_id = str(manifest.get("run_id", "")) if isinstance(manifest, dict) else ""
@@ -216,16 +217,28 @@ def _provenance_summary(report: dict[str, Any]) -> dict[str, Any]:
 
 
 def _redaction_summary(report: dict[str, Any]) -> dict[str, int]:
+    summary, _error = _redaction_summary_result(report)
+    return summary
+
+
+def _redaction_summary_result(report: dict[str, Any]) -> tuple[dict[str, int], str | None]:
     summary = report.get("summary")
     if not isinstance(summary, dict):
-        return {"redacted_nodes": 0, "redacted_values": 0}
+        return {"redacted_nodes": 0, "redacted_values": 0}, None
     redaction = summary.get("redaction")
     if not isinstance(redaction, dict):
-        return {"redacted_nodes": 0, "redacted_values": 0}
-    return {
-        "redacted_nodes": int(redaction.get("redacted_nodes", 0)),
-        "redacted_values": int(redaction.get("redacted_values", 0)),
-    }
+        return {"redacted_nodes": 0, "redacted_values": 0}, None
+    try:
+        return {
+            "redacted_nodes": int(redaction.get("redacted_nodes", 0)),
+            "redacted_values": int(redaction.get("redacted_values", 0)),
+        }, None
+    except (TypeError, ValueError):
+        return {"redacted_nodes": 0, "redacted_values": 0}, (
+            "report.json summary.redaction has invalid redaction_summary values: "
+            f"redacted_nodes={redaction.get('redacted_nodes')!r}, "
+            f"redacted_values={redaction.get('redacted_values')!r}"
+        )
 
 
 def _value_summary(value: Any) -> dict[str, Any]:
@@ -594,6 +607,67 @@ def _check_run_identity(
             type="bundle_run_identity",
             status="failed" if failures else "passed",
             message="; ".join(failures) if failures else f"bundle run_id {expected_run_id!r} is consistent",
+        )
+    )
+
+
+def _check_manifest_summary(
+    manifest: dict[str, Any] | None,
+    documents: dict[str, Any],
+    checks: list[VerificationCheck],
+) -> None:
+    if not isinstance(manifest, dict):
+        return
+
+    report = documents.get("report.json")
+    inputs = documents.get("inputs.json")
+    failures: list[str] = []
+
+    if isinstance(report, dict):
+        expected_status = report.get("status")
+        if manifest.get("status") != expected_status:
+            failures.append(
+                f"manifest status {manifest.get('status')!r} != report.json status {expected_status!r}"
+            )
+
+        expected_redaction_summary, redaction_summary_error = _redaction_summary_result(report)
+        if redaction_summary_error is not None:
+            failures.append(redaction_summary_error)
+        elif manifest.get("redaction_summary") != expected_redaction_summary:
+            failures.append(
+                "manifest redaction_summary "
+                f"{manifest.get('redaction_summary')!r} != report.json summary.redaction "
+                f"{expected_redaction_summary!r}"
+            )
+
+    manifest_input_summary = manifest.get("verification_input_summary")
+    if isinstance(report, dict):
+        report_input_summary = report.get("input_summary")
+        if manifest_input_summary != report_input_summary:
+            failures.append(
+                "manifest verification_input_summary "
+                f"{manifest_input_summary!r} != report.json input_summary {report_input_summary!r}"
+            )
+    if isinstance(inputs, dict):
+        expected_input_summary = _value_summary(inputs)
+        if manifest_input_summary != expected_input_summary:
+            failures.append(
+                "manifest verification_input_summary "
+                f"{manifest_input_summary!r} != inputs.json computed summary {expected_input_summary!r}"
+            )
+
+    if not isinstance(report, dict) and not isinstance(inputs, dict):
+        return
+
+    checks.append(
+        VerificationCheck(
+            type="bundle_manifest_summary",
+            status="failed" if failures else "passed",
+            message=(
+                "; ".join(failures)
+                if failures
+                else "manifest summary fields match report.json and inputs.json evidence"
+            ),
         )
     )
 

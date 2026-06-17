@@ -73,6 +73,7 @@ def test_exported_bundle_manifest_contains_file_digests_and_sdk_verifies_offline
         "bundle_yaml",
         "bundle_document_schema",
         "bundle_run_identity",
+        "bundle_manifest_summary",
         "bundle_redaction",
     }
 
@@ -343,6 +344,101 @@ def test_verify_evidence_bundle_detects_manifest_run_mismatch(tmp_path):
     )
 
 
+def test_verify_evidence_bundle_detects_manifest_status_summary_mismatch(tmp_path):
+    bundle_path, _run_id = _export_artifact_bundle(tmp_path)
+    mismatched = tmp_path / "status-summary-mismatch.zip"
+
+    def change_manifest(data: bytes) -> bytes:
+        manifest = json.loads(data)
+        manifest["status"] = "failed"
+        return _json_bytes(manifest)
+
+    _rewrite_bundle(bundle_path, mismatched, {"manifest.json": change_manifest})
+
+    verification = verify_evidence_bundle(mismatched)
+
+    assert verification.status == "failed"
+    assert any(
+        check.type == "bundle_manifest_summary"
+        and check.status == "failed"
+        and "status" in check.message
+        and "report.json" in check.message
+        for check in verification.checks
+    )
+
+
+def test_verify_evidence_bundle_detects_manifest_redaction_summary_mismatch(tmp_path):
+    bundle_path, _run_id = _export_artifact_bundle(tmp_path)
+    mismatched = tmp_path / "redaction-summary-mismatch.zip"
+
+    def change_manifest(data: bytes) -> bytes:
+        manifest = json.loads(data)
+        manifest["redaction_summary"] = {"redacted_nodes": 1, "redacted_values": 1}
+        return _json_bytes(manifest)
+
+    _rewrite_bundle(bundle_path, mismatched, {"manifest.json": change_manifest})
+
+    verification = verify_evidence_bundle(mismatched)
+
+    assert verification.status == "failed"
+    assert any(
+        check.type == "bundle_manifest_summary"
+        and check.status == "failed"
+        and "redaction_summary" in check.message
+        and "report.json" in check.message
+        for check in verification.checks
+    )
+
+
+def test_verify_evidence_bundle_reports_malformed_report_redaction_summary(tmp_path):
+    bundle_path, _run_id = _export_artifact_bundle(tmp_path)
+    malformed = tmp_path / "malformed-redaction-summary.zip"
+
+    def change_report(data: bytes) -> bytes:
+        report = json.loads(data)
+        report["summary"]["redaction"] = {
+            "redacted_nodes": "not-int",
+            "redacted_values": 0,
+        }
+        return _json_bytes(report)
+
+    _rewrite_bundle(bundle_path, malformed, {"report.json": change_report}, refresh_manifest=True)
+
+    verification = verify_evidence_bundle(malformed)
+
+    assert verification.status == "failed"
+    assert any(
+        check.type == "bundle_manifest_summary"
+        and check.status == "failed"
+        and "redaction_summary" in check.message
+        and "invalid" in check.message
+        for check in verification.checks
+    )
+
+
+def test_verify_evidence_bundle_detects_manifest_input_summary_mismatch(tmp_path):
+    bundle_path, _run_id = _export_artifact_bundle(tmp_path)
+    mismatched = tmp_path / "input-summary-mismatch.zip"
+
+    def change_manifest(data: bytes) -> bytes:
+        manifest = json.loads(data)
+        manifest["verification_input_summary"] = {"type": "object", "keys": ["topic"]}
+        return _json_bytes(manifest)
+
+    _rewrite_bundle(bundle_path, mismatched, {"manifest.json": change_manifest})
+
+    verification = verify_evidence_bundle(mismatched)
+
+    assert verification.status == "failed"
+    assert any(
+        check.type == "bundle_manifest_summary"
+        and check.status == "failed"
+        and "verification_input_summary" in check.message
+        and "inputs.json" in check.message
+        for check in verification.checks
+    )
+
+
 def test_verify_evidence_bundle_detects_redaction_sensitive_path_leak_after_manifest_refresh(tmp_path, monkeypatch):
     bundle_path, _run_id = _export_redaction_bundle(tmp_path, monkeypatch)
     leaked = tmp_path / "redaction-leak.zip"
@@ -387,6 +483,32 @@ def test_cli_verify_bundle_reports_success_and_failure_without_state_store(tmp_p
     failed_payload = json.loads(failed.stdout)
     assert failed_payload["ok"] is False
     assert failed_payload["verification"]["status"] == "failed"
+
+
+def test_cli_verify_bundle_reports_manifest_summary_mismatch_without_state_store(tmp_path):
+    bundle_path, _run_id = _export_artifact_bundle(tmp_path)
+    detached_state_dir = tmp_path / "detached-state"
+    mismatched = tmp_path / "cli-status-summary-mismatch.zip"
+
+    def change_manifest(data: bytes) -> bytes:
+        manifest = json.loads(data)
+        manifest["status"] = "failed"
+        return _json_bytes(manifest)
+
+    _rewrite_bundle(bundle_path, mismatched, {"manifest.json": change_manifest})
+
+    failed = run_cli("verify-bundle", str(mismatched), state_dir=detached_state_dir)
+
+    assert failed.returncode == 1
+    assert detached_state_dir.exists() is False
+    payload = json.loads(failed.stdout)
+    assert payload["ok"] is False
+    assert any(
+        check["type"] == "bundle_manifest_summary"
+        and check["status"] == "failed"
+        and "status" in check["message"]
+        for check in payload["verification"]["checks"]
+    )
 
 
 def _export_artifact_bundle(tmp_path: Path) -> tuple[Path, str]:
