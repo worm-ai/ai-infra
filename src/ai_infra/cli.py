@@ -6,7 +6,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from .artifacts import export_evidence_bundle
+from .artifacts import export_evidence_bundle, verify_evidence_bundle
 from .config import WorkflowValidationError, load_workflow, validate_workflow
 from .maintenance import (
     apply_retention_cleanup,
@@ -51,6 +51,9 @@ def main(argv: list[str] | None = None) -> int:
     verify_parser.add_argument("run_id")
     verify_parser.add_argument("--workflow")
 
+    verify_bundle_parser = subparsers.add_parser("verify-bundle")
+    verify_bundle_parser.add_argument("bundle")
+
     subparsers.add_parser("store-health")
 
     runs_parser = subparsers.add_parser("runs")
@@ -62,6 +65,15 @@ def main(argv: list[str] | None = None) -> int:
     cleanup_parser.add_argument("--apply", action="store_true")
 
     args = parser.parse_args(argv)
+    if args.command == "verify-bundle":
+        try:
+            verification = verify_evidence_bundle(args.bundle)
+        except ValueError as exc:
+            _print({"ok": False, "error": str(exc)})
+            return 2
+        _print({"ok": verification.status == "passed", "verification": asdict(verification)})
+        return 0 if verification.status == "passed" else 1
+
     if args.command == "store-health":
         _print({"ok": True, "health": inspect_state_dir(args.state_dir)})
         return 0

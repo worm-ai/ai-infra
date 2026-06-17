@@ -1,4 +1,4 @@
-from .artifacts import EvidenceBundle, export_evidence_bundle
+from .artifacts import EvidenceBundle, EvidenceBundleVerification, export_evidence_bundle, verify_evidence_bundle
 from .config import Workflow, WorkflowValidationError, load_workflow, load_workflow_from_source, validate_workflow
 from .layers import DagWorkflow, PlanExecAgent, ReActAgent, SuperAgent
 from .maintenance import (
@@ -32,6 +32,7 @@ from .tools import (
 __all__ = [
     "DagWorkflow",
     "EvidenceBundle",
+    "EvidenceBundleVerification",
     "PlanExecAgent",
     "ReActAgent",
     "ReActExecution",
@@ -66,4 +67,5 @@ __all__ = [
     "validate_run",
     "validate_stored_run",
     "validate_workflow",
+    "verify_evidence_bundle",
 ]

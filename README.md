@@ -21,7 +21,7 @@ PlanExec and Super-Agent remain future layers. They must build on the verified D
 - Python, shell, HTTP, ReAct, OpenAI-compatible fake provider, and local/fake MCP tool boundaries.
 - SQLite run store with run status, node events, verification results, and provenance snapshots.
 - Retry, failure policy, output contracts, resumption, governance budgets, redaction, artifact evidence, and retention helpers.
-- CLI commands for validate, run, resume, status, logs, report, verify, export-bundle, runs, store-health, and cleanup.
+- CLI commands for validate, run, resume, status, logs, report, verify, export-bundle, verify-bundle, runs, store-health, and cleanup.
 - SDK functions for local embedding in Python applications.
 
 ## Prerequisites
@@ -57,6 +57,7 @@ uv run ai-infra logs <run-id>
 uv run ai-infra report <run-id>
 uv run ai-infra verify <run-id>
 uv run ai-infra export-bundle <run-id> --output-dir .ai-infra/bundles
+uv run ai-infra verify-bundle .ai-infra/bundles/<run-id>-evidence-bundle.zip
 ```
 
 Run the full local production demo contract:
@@ -92,6 +93,7 @@ from ai_infra import (
     run_workflow,
     validate_stored_run,
     validate_workflow,
+    verify_evidence_bundle,
 )
 
 workflow = load_workflow(Path("examples/hello_workflow.yaml"))
@@ -103,8 +105,10 @@ verification = validate_stored_run(result.run_id, store=store)
 run = get_run(result.run_id, store=store)
 report = build_run_report(result.run_id, store=store)
 bundle = export_evidence_bundle(run, report, ".ai-infra/bundles")
+bundle_verification = verify_evidence_bundle(bundle.path)
 
 assert verification.status == "passed"
+assert bundle_verification.status == "passed"
 print(result.run_id, bundle.path)
 ```
 
@@ -116,7 +120,8 @@ Each run persists:
 - Ordered node events with inputs, outputs, status, metadata, attempts, tool invocation evidence, ReAct evidence, governance evidence, contracts, and artifacts.
 - Immutable workflow provenance with source hash and environment summary.
 - Verification checks declared by the workflow.
-- Optional evidence bundles containing report JSON, inputs, events, redacted workflow snapshot, manifest, and collected artifacts.
+- Optional evidence bundles containing report JSON, inputs, events, redacted workflow snapshot, manifest digests, and collected artifacts.
+- Offline bundle verification with per-file SHA-256 checks, run identity checks, JSON/YAML schema checks, and redaction-path checks. This verifies internal bundle consistency; external authenticity and signing remain future work.
 
 The evidence model is designed for traceability, failure localization, cost/governance inspection, and audit review.
 
@@ -128,6 +133,7 @@ Core verification:
 abh doctor --json
 uv run pytest -q
 uv run python scripts/verify_cli_production_demo.py
+uv run python scripts/verify_cli_bundle_integrity.py
 ```
 
 Focused verifier scripts:
@@ -136,6 +142,7 @@ Focused verifier scripts:
 uv run python scripts/verify_cli_react_openai_provider.py
 uv run python scripts/verify_cli_mcp_runtime.py
 uv run python scripts/verify_cli_redaction_governance.py
+uv run python scripts/verify_cli_bundle_integrity.py
 uv run python scripts/verify_cli_retry_policy.py
 uv run python scripts/verify_cli_resume.py
 uv run python scripts/verify_cli_artifacts.py
