@@ -1,0 +1,30 @@
+id: react-openai-compatible-timeout
+name: OpenAI-Compatible ReAct Timeout Workflow
+version: "0.1"
+entrypoint: answer
+nodes:
+  answer:
+    type: react
+    config:
+      provider: openai-compatible
+      model: fake-chat
+      base_url: memory://timeout
+      api_key_env: AI_INFRA_FAKE_OPENAI_API_KEY
+      timeout_ms: 1000
+      prompt: "Answer {question}"
+      max_steps: 1
+      budget:
+        max_total_tokens: 100
+        max_cost_usd: 0.01
+        prompt_cost_per_1k_tokens: 0.001
+        completion_cost_per_1k_tokens: 0.002
+validations:
+  - type: run_status
+    equals: failed
+  - type: node_failed
+    node: answer
+  - type: assertion
+    source: node_output
+    node: answer
+    path: react.provider.status
+    equals: timeout

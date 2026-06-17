@@ -318,7 +318,17 @@ def _validate_react_node(node: WorkflowNode) -> None:
         raise WorkflowValidationError(f"react node {node.id!r} requires config")
     _reject_unknown_fields(
         react_config,
-        {"provider", "model", "prompt", "max_steps", "budget", "tools", "base_url", "api_key_env"},
+        {
+            "provider",
+            "model",
+            "prompt",
+            "max_steps",
+            "budget",
+            "tools",
+            "base_url",
+            "api_key_env",
+            "timeout_ms",
+        },
         f"react node {node.id!r} config",
     )
 
@@ -341,22 +351,70 @@ def _validate_react_node(node: WorkflowNode) -> None:
         raise WorkflowValidationError(f"react node {node.id!r} base_url must be a non-empty string")
     if "api_key_env" in react_config and not _is_non_empty_string(react_config.get("api_key_env")):
         raise WorkflowValidationError(f"react node {node.id!r} api_key_env must be a non-empty string")
+    if provider == "openai-compatible":
+        if not _is_non_empty_string(react_config.get("base_url")):
+            raise WorkflowValidationError(f"react node {node.id!r} openai-compatible provider requires base_url")
+        if not _is_non_empty_string(react_config.get("api_key_env")):
+            raise WorkflowValidationError(f"react node {node.id!r} openai-compatible provider requires api_key_env")
+        if not _is_supported_react_base_url(str(react_config["base_url"])):
+            raise WorkflowValidationError(
+                f"react node {node.id!r} openai-compatible provider has unsupported base_url"
+            )
+        if "timeout_ms" not in react_config:
+            raise WorkflowValidationError(f"react node {node.id!r} openai-compatible provider requires timeout_ms")
+    _validate_positive_int(react_config, "timeout_ms", f"react node {node.id!r} timeout_ms")
 
     budget = react_config.get("budget")
+    if provider == "openai-compatible" and budget is None:
+        raise WorkflowValidationError(f"react node {node.id!r} openai-compatible provider requires budget")
     if budget is not None:
         if not isinstance(budget, dict):
             raise WorkflowValidationError(f"react node {node.id!r} budget must be a mapping")
-        _reject_unknown_fields(budget, {"max_tool_calls"}, f"react node {node.id!r} budget")
+        _reject_unknown_fields(
+            budget,
+            {
+                "max_tool_calls",
+                "max_total_tokens",
+                "max_cost_usd",
+                "prompt_cost_per_1k_tokens",
+                "completion_cost_per_1k_tokens",
+            },
+            f"react node {node.id!r} budget",
+        )
+        if provider == "openai-compatible":
+            for required_key in (
+                "max_total_tokens",
+                "max_cost_usd",
+                "prompt_cost_per_1k_tokens",
+                "completion_cost_per_1k_tokens",
+            ):
+                if required_key not in budget:
+                    raise WorkflowValidationError(
+                        f"react node {node.id!r} openai-compatible provider budget requires {required_key}"
+                    )
         max_tool_calls = budget.get("max_tool_calls")
-        if (
-            not isinstance(max_tool_calls, int)
-            or isinstance(max_tool_calls, bool)
-            or max_tool_calls < 1
-            or max_tool_calls > max_steps
-        ):
-            raise WorkflowValidationError(
-                f"react node {node.id!r} budget max_tool_calls must be a positive integer not greater than max_steps"
-            )
+        if max_tool_calls is not None:
+            if (
+                not isinstance(max_tool_calls, int)
+                or isinstance(max_tool_calls, bool)
+                or max_tool_calls < 1
+                or max_tool_calls > max_steps
+            ):
+                raise WorkflowValidationError(
+                    f"react node {node.id!r} budget max_tool_calls must be a positive integer not greater than max_steps"
+                )
+        _validate_positive_int(budget, "max_total_tokens", f"react node {node.id!r} budget max_total_tokens")
+        _validate_non_negative_number(budget, "max_cost_usd", f"react node {node.id!r} budget max_cost_usd")
+        _validate_non_negative_number(
+            budget,
+            "prompt_cost_per_1k_tokens",
+            f"react node {node.id!r} budget prompt_cost_per_1k_tokens",
+        )
+        _validate_non_negative_number(
+            budget,
+            "completion_cost_per_1k_tokens",
+            f"react node {node.id!r} budget completion_cost_per_1k_tokens",
+        )
 
     tools = react_config.get("tools", [])
     if tools is None:
@@ -546,6 +604,14 @@ def _validate_positive_int(config: dict[str, Any], key: str, context: str) -> No
     value = config[key]
     if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
         raise WorkflowValidationError(f"{context} must be a positive integer")
+
+
+def _validate_non_negative_number(config: dict[str, Any], key: str, context: str) -> None:
+    if key not in config:
+        return
+    value = config[key]
+    if not isinstance(value, int | float) or isinstance(value, bool) or value < 0:
+        raise WorkflowValidationError(f"{context} must be a non-negative number")
 
 
 def _validate_string_list(config: dict[str, Any], key: str, context: str) -> None:
@@ -761,6 +827,12 @@ def _is_non_empty_string(value: Any) -> bool:
 
 def _is_supported_http_url(url: str) -> bool:
     return url == "memory://echo" or url.startswith(("http://", "https://"))
+
+
+def _is_supported_react_base_url(url: str) -> bool:
+    return url in {"memory://fake-openai", "memory://timeout", "memory://provider-error"} or url.startswith(
+        ("http://", "https://")
+    )
 
 
 def _validate_acyclic(workflow: Workflow) -> None:

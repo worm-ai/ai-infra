@@ -9,7 +9,6 @@ from ai_infra.tools import default_tool_registry
 def test_build_run_report_summarizes_successful_tool_run(tmp_path):
     store = RunStore(tmp_path / "runs.sqlite")
     workflow_path = Path("examples/tool_workflow.yaml")
-    workflow_source = workflow_path.read_text(encoding="utf-8")
     workflow = load_workflow(workflow_path)
     result = run_workflow(workflow, {"topic": "ABH"}, store=store)
 
@@ -20,7 +19,8 @@ def test_build_run_report_summarizes_successful_tool_run(tmp_path):
     assert report["status"] == "completed"
     assert report["inputs"] == {"topic": "ABH"}
     assert report["provenance"]["workflow_source_path"] == str(workflow_path)
-    assert report["provenance"]["workflow_snapshot"] == workflow_source
+    assert report["provenance"]["workflow_snapshot_present"] is True
+    assert "tool-workflow" in report["provenance"]["workflow_snapshot"]
     assert report["provenance"]["workflow_sha256"]
     assert report["provenance"]["inputs_sha256"]
     assert report["provenance"]["git_commit"] is None or len(report["provenance"]["git_commit"]) >= 7
@@ -165,7 +165,41 @@ validations:
 
     report = build_run_report(result.run_id, store=store)
 
-    assert report["provenance"]["workflow_snapshot"] == original_source
+    assert "report-drift-workflow" in report["provenance"]["workflow_snapshot"]
+    assert "Original {topic}" in report["provenance"]["workflow_snapshot"]
+    assert "Changed {topic}" not in report["provenance"]["workflow_snapshot"]
+    assert report["provenance"]["workflow_snapshot_present"] is True
+
+
+def test_build_run_report_redacts_prompt_values_from_external_snapshot(tmp_path):
+    workflow_path = tmp_path / "report_prompt_snapshot_workflow.yaml"
+    workflow_path.write_text(
+        """
+id: report-prompt-snapshot
+entrypoint: answer
+nodes:
+  answer:
+    type: react
+    config:
+      provider: mock
+      model: fake
+      prompt: "Answer {secret}"
+      max_steps: 1
+validations:
+  - type: run_status
+    equals: completed
+""".strip(),
+        encoding="utf-8",
+    )
+    store = RunStore(tmp_path / "runs.sqlite")
+    workflow = load_workflow(workflow_path)
+    result = run_workflow(workflow, {"secret": "ABH"}, store=store)
+
+    report = build_run_report(result.run_id, store=store)
+
+    snapshot = report["provenance"]["workflow_snapshot"]
+    assert "Answer {secret}" not in snapshot
+    assert "prompt: '[REDACTED_PROMPT]'" in snapshot or "prompt: [REDACTED_PROMPT]" in snapshot
     assert report["provenance"]["workflow_snapshot_present"] is True
 
 

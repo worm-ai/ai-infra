@@ -3,12 +3,12 @@
 ## Metadata
 
 - ID: plan-016-openai-compatible-react-provider-boundary
-- Status: ready
+- Status: closed
 - Attractor: attractor-industrial-agent-orchestration
 - Baseline: Plans 001-015 are closed with a production-oriented local YAML DAG stack: LangGraph-backed execution, bounded python/shell/http tool nodes, structured reports, SQLite evidence, hardened schema validation, immutable provenance, retry/failure policies, output contracts, resumption, local artifact evidence bundles, execution governance, run store maintenance, MCP reserved boundary, validation assertions, input secret/environment governance, and a bounded ReAct atomic node. Plan-015 added deterministic mock/offline ReAct execution and reserved OpenAI-compatible configuration, but the real provider boundary remains intentionally non-production: provider credentials, timeout, token/cost budget, request/response summaries, failure evidence, redaction, and report/verify/bundle surfaces are not yet hardened end to end.
 - Owner: engineering
 - Created: 2026-06-17T09:05:28.961410+00:00
-- Updated: 2026-06-17T09:05:28.963119+00:00
+- Updated: 2026-06-17T10:45:52.289746+00:00
 
 ## Goals
 
@@ -53,14 +53,15 @@
 ### Residual Pressure
 
 - Live provider smoke tests, richer model adapters, streaming, MCP runtime tools, PlanExec, Super-Agent, API/UI, remote scheduling, and distributed governance remain future phases. | Non-blocking rationale: 
+- Live provider smoke tests, richer model adapters, streaming, MCP runtime tools, PlanExec, Super-Agent, API/UI, remote scheduling, and distributed governance remain future phases. | Non-blocking rationale: outside plan-016 scope per active attractor boundaries.
 
 ## Validation Checklist
 
 - abh doctor --json
 - uv run pytest -q
 - uv run ai-infra validate examples/react_openai_compatible_workflow.yaml
-- uv run ai-infra run examples/react_openai_compatible_workflow.yaml --input-file examples/react_openai_compatible_input.json
 - uv run python scripts/verify_cli_react_openai_provider.py
+- uv run python scripts/verify_cli_react_node.py
 
 ## Closure Evidence
 
@@ -72,8 +73,12 @@
 
 ## Verification Runs
 
-- 
+- ver-b8127600c925
+- ver-a7defb77c392
+- ver-820a7790f7c8
+- ver-0fc16b5d4555
+- ver-1e54554c7e3c
 
 ## Audits
 
-- 
+- audit-016-openai-compatible-react-provider-boundary

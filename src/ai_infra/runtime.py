@@ -474,6 +474,11 @@ def _redact_values(value: Any, sensitive_values: set[Any]) -> int:
             if _is_sensitive_scalar(item, sensitive_values):
                 value[key] = REDACTION_MARKER
                 count += 1
+            elif isinstance(item, str):
+                redacted, replacements = _redact_sensitive_substrings(item, sensitive_values)
+                if replacements:
+                    value[key] = redacted
+                    count += replacements
             else:
                 count += _redact_values(item, sensitive_values)
     elif isinstance(value, list):
@@ -481,6 +486,11 @@ def _redact_values(value: Any, sensitive_values: set[Any]) -> int:
             if _is_sensitive_scalar(item, sensitive_values):
                 value[index] = REDACTION_MARKER
                 count += 1
+            elif isinstance(item, str):
+                redacted, replacements = _redact_sensitive_substrings(item, sensitive_values)
+                if replacements:
+                    value[index] = redacted
+                    count += replacements
             else:
                 count += _redact_values(item, sensitive_values)
     return count
@@ -488,6 +498,20 @@ def _redact_values(value: Any, sensitive_values: set[Any]) -> int:
 
 def _is_sensitive_scalar(value: Any, sensitive_values: set[Any]) -> bool:
     return isinstance(value, (str, int, float, bool)) and value in sensitive_values
+
+
+def _redact_sensitive_substrings(value: str, sensitive_values: set[Any]) -> tuple[str, int]:
+    redacted = value
+    count = 0
+    for sensitive_value in sensitive_values:
+        if not isinstance(sensitive_value, str) or not sensitive_value:
+            continue
+        occurrences = redacted.count(sensitive_value)
+        if not occurrences:
+            continue
+        redacted = redacted.replace(sensitive_value, REDACTION_MARKER)
+        count += occurrences
+    return redacted, count
 
 
 def _redact_path(value: Any, parts: list[str]) -> int:

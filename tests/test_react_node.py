@@ -409,6 +409,7 @@ def test_react_sdk_boundary_objects_are_serializable_without_prompt_leakage():
         "api_key_env": None,
         "prompt_sha256": hashlib.sha256(b"Answer {secret}").hexdigest(),
         "max_steps": 2,
+        "timeout_ms": None,
     }
     assert "secret" not in json.dumps(summary)
 

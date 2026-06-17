@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from .snapshots import redacted_workflow_snapshot
 from .store import NodeEvent, StoredRun
 from .tools import _render_template
 
@@ -103,7 +104,7 @@ def export_evidence_bundle(
         archive.writestr("inputs.json", _json_bytes(run.inputs))
         archive.writestr("events.json", _json_bytes([asdict(event) for event in run.events]))
         if run.provenance is not None:
-            archive.writestr("workflow_snapshot.yaml", run.provenance.workflow_snapshot)
+            archive.writestr("workflow_snapshot.yaml", redacted_workflow_snapshot(run.provenance.workflow_snapshot))
         else:
             archive.writestr("workflow_snapshot.yaml", "")
 

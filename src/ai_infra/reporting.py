@@ -4,6 +4,7 @@ from typing import Any
 
 from .artifacts import event_artifacts
 from .runtime import default_store
+from .snapshots import redacted_workflow_snapshot
 from .store import NodeEvent, RunProvenance, RunStore
 
 
@@ -75,7 +76,7 @@ def _provenance_report(provenance: RunProvenance | None) -> dict[str, Any] | Non
         return None
     return {
         "workflow_source_path": provenance.workflow_source_path,
-        "workflow_snapshot": provenance.workflow_snapshot,
+        "workflow_snapshot": redacted_workflow_snapshot(provenance.workflow_snapshot),
         "workflow_sha256": provenance.workflow_sha256,
         "workflow_snapshot_present": bool(provenance.workflow_snapshot),
         "inputs_sha256": provenance.inputs_sha256,

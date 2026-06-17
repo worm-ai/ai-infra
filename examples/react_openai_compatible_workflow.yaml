@@ -1,0 +1,47 @@
+id: react-openai-compatible-workflow
+name: OpenAI-Compatible ReAct Provider Workflow
+version: "0.1"
+entrypoint: answer
+governance:
+  sensitive_paths:
+    - inputs.secret
+    - node_output.answer.answer
+nodes:
+  answer:
+    type: react
+    config:
+      provider: openai-compatible
+      model: fake-chat
+      base_url: memory://fake-openai
+      api_key_env: AI_INFRA_FAKE_OPENAI_API_KEY
+      timeout_ms: 1000
+      prompt: "Echo {secret}"
+      max_steps: 1
+      budget:
+        max_total_tokens: 100
+        max_cost_usd: 0.01
+        prompt_cost_per_1k_tokens: 0.001
+        completion_cost_per_1k_tokens: 0.002
+validations:
+  - type: run_status
+    equals: completed
+  - type: node_completed
+    node: answer
+  - type: assertion
+    source: node_output
+    node: answer
+    path: react.provider.status
+    equals: completed
+  - type: assertion
+    source: node_output
+    node: answer
+    path: answer
+    equals: "[REDACTED]"
+  - type: assertion
+    source: report
+    path: timeline.0.react.provider.request.endpoint
+    equals: /chat/completions
+  - type: assertion
+    source: report
+    path: summary.redaction.redacted_nodes
+    equals: 1
