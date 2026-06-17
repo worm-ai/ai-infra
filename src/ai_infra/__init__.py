@@ -8,6 +8,7 @@ from .maintenance import (
     list_run_summaries,
     plan_retention_cleanup,
 )
+from .react import ReActExecution, ReActModelConfig, ReActStepEvidence, execute_react_node
 from .reporting import build_run_report, build_stored_run_report
 from .runtime import (
     RunResult,
@@ -33,6 +34,9 @@ __all__ = [
     "EvidenceBundle",
     "PlanExecAgent",
     "ReActAgent",
+    "ReActExecution",
+    "ReActModelConfig",
+    "ReActStepEvidence",
     "RunResult",
     "SuperAgent",
     "ToolExecution",
@@ -48,6 +52,7 @@ __all__ = [
     "build_tool_invocation",
     "default_tool_registry",
     "execute_tool",
+    "execute_react_node",
     "export_evidence_bundle",
     "get_run",
     "inspect_run_store",

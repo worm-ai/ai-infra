@@ -1,0 +1,52 @@
+id: react-workflow
+name: ReAct Atomic Node Workflow
+version: "0.1"
+entrypoint: answer
+nodes:
+  answer:
+    type: react
+    config:
+      provider: mock
+      model: mock-react
+      prompt: "Use declared tools to answer {question}"
+      max_steps: 2
+      budget:
+        max_tool_calls: 1
+      tools:
+        - adapter: python
+          name: echo
+          args:
+            value: "{question}"
+validations:
+  - type: run_status
+    equals: completed
+  - type: node_completed
+    node: answer
+  - type: assertion
+    source: node_output
+    node: answer
+    path: answer
+    equals: ABH
+  - type: assertion
+    source: node_output
+    node: answer
+    path: react.steps.0.action.type
+    equals: tool
+  - type: assertion
+    source: node_output
+    node: answer
+    path: react.steps.1.action.type
+    equals: final_answer
+  - type: assertion
+    source: tool_invocation
+    node: answer
+    path: status
+    equals: completed
+  - type: assertion
+    source: report
+    path: summary.react.nodes
+    equals: 1
+  - type: assertion
+    source: report
+    path: timeline.0.react.model.provider
+    equals: mock

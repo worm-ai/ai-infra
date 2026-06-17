@@ -8,7 +8,7 @@
 - Baseline: Plans 001-013 are closed with local YAML DAG execution, bounded tool nodes, structured reports, hardened schema validation, immutable provenance, retry/failure policies, output contracts, resumption, local artifact evidence, execution governance, run store maintenance, MCP reserved boundary, and workflow validation assertions. The current production DAG stack still lacks explicit governance for required environment variables, sensitive input fields, and redaction of secret-bearing evidence, so local runs can be difficult to audit safely when workflows depend on credentials or sensitive payloads.
 - Owner: engineering
 - Created: 2026-06-16T09:22:47.748146+00:00
-- Updated: 2026-06-16T11:35:56.047333+00:00
+- Updated: 2026-06-17T01:09:18.511605+00:00
 
 ## Goals
 
@@ -52,7 +52,7 @@
 
 ### Residual Pressure
 
-- External secret managers, richer policy engines, real MCP runtime, OpenAI-compatible ReAct execution, PlanExec, Super-Agent, API/UI, remote scheduling, and distributed governance remain future phases. | Non-blocking rationale:
+- External secret managers, richer policy engines, real MCP runtime, OpenAI-compatible ReAct execution, PlanExec, Super-Agent, API/UI, remote scheduling, and distributed governance remain future phases. | Non-blocking rationale: 
 
 ## Validation Checklist
 
@@ -81,6 +81,7 @@
 - ver-3ec366fd9082
 - ver-44839119c22b
 - ver-e5260ab6cbbc
+- ver-48526a0a604c
 
 ## Audits
 

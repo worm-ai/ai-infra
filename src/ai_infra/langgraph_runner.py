@@ -8,6 +8,7 @@ from langgraph.graph import END, START, StateGraph
 
 from .artifacts import collect_node_artifacts
 from .config import Workflow, WorkflowNode, validate_workflow
+from .react import execute_react_node
 from .store import NodeEvent, RunStore
 from .tools import _render_template, execute_tool
 
@@ -383,6 +384,12 @@ def _execute_node(node: WorkflowNode, context: dict[str, Any]) -> tuple[str, Any
         if not isinstance(tool_config, dict):
             raise RuntimeError(f"tool node {node.id!r} requires tool config")
         execution = execute_tool(tool_config, context)
+        return execution.status, execution.output
+    if node.type == "react":
+        react_config = node.config.get("config")
+        if not isinstance(react_config, dict):
+            raise RuntimeError(f"react node {node.id!r} requires config")
+        execution = execute_react_node(react_config, context)
         return execution.status, execution.output
     raise RuntimeError(f"node {node.id!r} has no executable runner for type {node.type!r}")
 

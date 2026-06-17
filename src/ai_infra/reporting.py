@@ -51,6 +51,9 @@ def build_stored_run_report(run: Any) -> dict[str, Any]:
     redaction_summary = _redaction_summary(timeline)
     if redaction_summary is not None:
         summary["redaction"] = redaction_summary
+    react_summary = _react_summary(timeline)
+    if react_summary is not None:
+        summary["react"] = react_summary
 
     return {
         "run_id": run.run_id,
@@ -106,6 +109,7 @@ def _node_report(index: int, events: list[NodeEvent]) -> dict[str, Any]:
         "output_summary": _value_summary(event.output),
         "output": event.output,
         "tool": _tool_report(event.output),
+        "react": _react_report(event.output),
         "contract": _contract_report(event),
         "resume": _resume_report(event),
         "artifacts": _artifact_report(event),
@@ -195,6 +199,15 @@ def _tool_report(output: Any) -> dict[str, Any] | None:
     return {key: output[key] for key in keys if key in output}
 
 
+def _react_report(output: Any) -> dict[str, Any] | None:
+    if not isinstance(output, dict):
+        return None
+    react = output.get("react")
+    if not isinstance(react, dict):
+        return None
+    return dict(react)
+
+
 def _contract_report(event: NodeEvent) -> dict[str, Any] | None:
     contract = event.metadata.get("contract")
     if not isinstance(contract, dict):
@@ -241,6 +254,27 @@ def _redaction_summary(timeline: list[dict[str, Any]]) -> dict[str, int] | None:
     if not redacted_nodes:
         return None
     return {"redacted_nodes": redacted_nodes, "redacted_values": redacted_values}
+
+
+def _react_summary(timeline: list[dict[str, Any]]) -> dict[str, int] | None:
+    counts = {"nodes": 0, "completed": 0, "failed": 0, "steps": 0, "tool_calls": 0}
+    for node in timeline:
+        react = node.get("react")
+        if not isinstance(react, dict):
+            continue
+        counts["nodes"] += 1
+        status = react.get("status")
+        if status == "completed":
+            counts["completed"] += 1
+        elif status == "failed":
+            counts["failed"] += 1
+        steps = react.get("steps")
+        if isinstance(steps, list):
+            counts["steps"] += len(steps)
+        budget = react.get("budget")
+        if isinstance(budget, dict) and isinstance(budget.get("tool_calls_used"), int):
+            counts["tool_calls"] += int(budget["tool_calls_used"])
+    return counts if counts["nodes"] else None
 
 
 def _governance_summary(timeline: list[dict[str, Any]]) -> dict[str, int] | None:

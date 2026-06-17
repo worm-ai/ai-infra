@@ -16,6 +16,7 @@ NODE_FIELDS = {"type", "template", "next", "tool", "config", "policy", "contract
 EDGE_FIELDS = {"from", "to"}
 SUPPORTED_NODE_TYPES = {"template", "react", "tool", "llm", "validation"}
 SUPPORTED_TOOL_ADAPTERS = {"python", "shell", "http", "mcp"}
+SUPPORTED_REACT_PROVIDERS = {"mock", "openai-compatible"}
 SUPPORTED_HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
 SUPPORTED_CONTRACT_TYPES = {"object", "array", "string", "integer", "number", "boolean", "null"}
 SUPPORTED_CONTRACT_STATUSES = {"passed", "failed"}
@@ -132,6 +133,8 @@ def validate_workflow(workflow: Workflow) -> None:
             raise WorkflowValidationError(f"template node {node.id!r} requires template")
         if node.type == "tool":
             _validate_tool_node(node)
+        if node.type == "react":
+            _validate_react_node(node)
         _validate_node_policy(node)
         _validate_node_contract(node)
         _validate_node_artifacts(node)
@@ -307,6 +310,108 @@ def _validate_tool_node(node: WorkflowNode) -> None:
     if method not in SUPPORTED_HTTP_METHODS:
         raise WorkflowValidationError(f"http tool node {node.id!r} has unsupported method {method!r}")
     _validate_timeout(tool_config, f"http tool node {node.id!r}")
+
+
+def _validate_react_node(node: WorkflowNode) -> None:
+    react_config = node.config.get("config")
+    if not isinstance(react_config, dict):
+        raise WorkflowValidationError(f"react node {node.id!r} requires config")
+    _reject_unknown_fields(
+        react_config,
+        {"provider", "model", "prompt", "max_steps", "budget", "tools", "base_url", "api_key_env"},
+        f"react node {node.id!r} config",
+    )
+
+    provider = react_config.get("provider")
+    if not _is_non_empty_string(provider):
+        raise WorkflowValidationError(f"react node {node.id!r} requires provider")
+    if provider not in SUPPORTED_REACT_PROVIDERS:
+        allowed = ", ".join(sorted(SUPPORTED_REACT_PROVIDERS))
+        raise WorkflowValidationError(f"react node {node.id!r} provider must be one of {allowed}")
+
+    if not _is_non_empty_string(react_config.get("model")):
+        raise WorkflowValidationError(f"react node {node.id!r} requires model")
+    if not _is_non_empty_string(react_config.get("prompt")):
+        raise WorkflowValidationError(f"react node {node.id!r} requires prompt")
+    max_steps = react_config.get("max_steps")
+    if not isinstance(max_steps, int) or isinstance(max_steps, bool) or max_steps < 1 or max_steps > 10:
+        raise WorkflowValidationError(f"react node {node.id!r} max_steps must be an integer between 1 and 10")
+
+    if "base_url" in react_config and not _is_non_empty_string(react_config.get("base_url")):
+        raise WorkflowValidationError(f"react node {node.id!r} base_url must be a non-empty string")
+    if "api_key_env" in react_config and not _is_non_empty_string(react_config.get("api_key_env")):
+        raise WorkflowValidationError(f"react node {node.id!r} api_key_env must be a non-empty string")
+
+    budget = react_config.get("budget")
+    if budget is not None:
+        if not isinstance(budget, dict):
+            raise WorkflowValidationError(f"react node {node.id!r} budget must be a mapping")
+        _reject_unknown_fields(budget, {"max_tool_calls"}, f"react node {node.id!r} budget")
+        max_tool_calls = budget.get("max_tool_calls")
+        if (
+            not isinstance(max_tool_calls, int)
+            or isinstance(max_tool_calls, bool)
+            or max_tool_calls < 1
+            or max_tool_calls > max_steps
+        ):
+            raise WorkflowValidationError(
+                f"react node {node.id!r} budget max_tool_calls must be a positive integer not greater than max_steps"
+            )
+
+    tools = react_config.get("tools", [])
+    if tools is None:
+        return
+    if not isinstance(tools, list):
+        raise WorkflowValidationError(f"react node {node.id!r} tools must be a list")
+    for index, tool_config in enumerate(tools):
+        if not isinstance(tool_config, dict):
+            raise WorkflowValidationError(f"react node {node.id!r} tool[{index}] must be a mapping")
+        _validate_react_tool_config(node, index, tool_config)
+
+
+def _validate_react_tool_config(node: WorkflowNode, index: int, tool_config: dict[str, Any]) -> None:
+    adapter = tool_config.get("adapter")
+    context = f"react node {node.id!r} tool[{index}]"
+    if not _is_non_empty_string(adapter):
+        raise WorkflowValidationError(f"{context} requires tool adapter")
+    if adapter not in SUPPORTED_TOOL_ADAPTERS:
+        raise WorkflowValidationError(f"{context} has unsupported adapter {adapter!r}")
+
+    if adapter == "python":
+        _reject_unknown_fields(tool_config, {"adapter", "name", "args"}, f"python {context}")
+        if not _is_non_empty_string(tool_config.get("name")):
+            raise WorkflowValidationError(f"python {context} requires name")
+        if "args" in tool_config and not isinstance(tool_config["args"], dict):
+            raise WorkflowValidationError(f"python {context} args must be a mapping")
+        return
+
+    if adapter == "shell":
+        _reject_unknown_fields(tool_config, {"adapter", "command", "timeout_seconds"}, f"shell {context}")
+        if not _is_non_empty_string(tool_config.get("command")):
+            raise WorkflowValidationError(f"shell {context} requires non-empty command")
+        _validate_timeout(tool_config, f"shell {context}")
+        return
+
+    if adapter == "mcp":
+        _reject_unknown_fields(tool_config, {"adapter", "server", "tool", "args"}, f"mcp {context}")
+        if not _is_non_empty_string(tool_config.get("server")):
+            raise WorkflowValidationError(f"mcp {context} requires server")
+        if not _is_non_empty_string(tool_config.get("tool")):
+            raise WorkflowValidationError(f"mcp {context} requires tool")
+        if "args" in tool_config and not isinstance(tool_config["args"], dict):
+            raise WorkflowValidationError(f"mcp {context} args must be a mapping")
+        return
+
+    _reject_unknown_fields(tool_config, {"adapter", "method", "url", "json", "timeout_seconds"}, f"http {context}")
+    url = tool_config.get("url")
+    if not _is_non_empty_string(url):
+        raise WorkflowValidationError(f"http {context} requires url")
+    if not _is_supported_http_url(url):
+        raise WorkflowValidationError(f"http {context} has unsupported url {url!r}")
+    method = str(tool_config.get("method", "GET")).upper()
+    if method not in SUPPORTED_HTTP_METHODS:
+        raise WorkflowValidationError(f"http {context} has unsupported method {method!r}")
+    _validate_timeout(tool_config, f"http {context}")
 
 
 def _validate_node_policy(node: WorkflowNode) -> None:
