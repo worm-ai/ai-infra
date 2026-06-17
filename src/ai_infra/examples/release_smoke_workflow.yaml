@@ -1,6 +1,11 @@
 id: release-smoke-workflow
 name: Release Smoke Workflow
 version: "0.1"
+schema_version: "1"
+features:
+  - template_nodes
+  - edge_list
+  - validations
 entrypoint: draft
 nodes:
   draft:

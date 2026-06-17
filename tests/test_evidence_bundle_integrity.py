@@ -40,6 +40,8 @@ def test_exported_bundle_manifest_contains_file_digests_and_sdk_verifies_offline
         assert manifest["run_id"] == run_id
         assert manifest["workflow_id"] == "artifact-workflow"
         assert manifest["provenance_summary"]["workflow_sha256"]
+        assert manifest["compatibility_summary"]["status"] == "supported"
+        assert manifest["compatibility_summary"]["schema_version"]["declared"] == "1"
         assert "workflow_snapshot" not in manifest["provenance_summary"]
         assert manifest["redaction_summary"] == {"redacted_nodes": 0, "redacted_values": 0}
         assert manifest["verification_input_summary"] == {

@@ -195,6 +195,7 @@ def _bundle_manifest(
         "workflow_id": run.workflow_id,
         "status": run.status,
         "provenance_summary": _provenance_summary(report),
+        "compatibility_summary": _compatibility_summary(report),
         "redaction_summary": _redaction_summary(report),
         "verification_input_summary": report.get("input_summary", _value_summary(run.inputs)),
         "files": _manifest_files(entries),
@@ -213,6 +214,19 @@ def _provenance_summary(report: dict[str, Any]) -> dict[str, Any]:
         "inputs_sha256": provenance.get("inputs_sha256"),
         "git_commit": provenance.get("git_commit"),
         "environment": provenance.get("environment"),
+    }
+
+
+def _compatibility_summary(report: dict[str, Any]) -> dict[str, Any]:
+    compatibility = report.get("compatibility")
+    if not isinstance(compatibility, dict):
+        return {}
+    return {
+        "schema_version": compatibility.get("schema_version"),
+        "features": compatibility.get("features"),
+        "status": compatibility.get("status"),
+        "failure_category": compatibility.get("failure_category"),
+        "diagnostics": compatibility.get("diagnostics"),
     }
 
 
@@ -638,6 +652,14 @@ def _check_manifest_summary(
                 "manifest redaction_summary "
                 f"{manifest.get('redaction_summary')!r} != report.json summary.redaction "
                 f"{expected_redaction_summary!r}"
+            )
+
+        expected_compatibility_summary = _compatibility_summary(report)
+        if manifest.get("compatibility_summary") != expected_compatibility_summary:
+            failures.append(
+                "manifest compatibility_summary "
+                f"{manifest.get('compatibility_summary')!r} != report.json compatibility "
+                f"{expected_compatibility_summary!r}"
             )
 
     manifest_input_summary = manifest.get("verification_input_summary")

@@ -25,6 +25,8 @@ def test_build_run_report_summarizes_successful_tool_run(tmp_path):
     assert report["provenance"]["inputs_sha256"]
     assert report["provenance"]["git_commit"] is None or len(report["provenance"]["git_commit"]) >= 7
     assert "python_version" in report["provenance"]["environment"]
+    assert report["compatibility"]["status"] == "supported"
+    assert report["compatibility"]["schema_version"]["declared"] == "1"
     assert report["input_summary"] == {"type": "object", "keys": ["topic"]}
     assert report["outputs"]["python_echo"]["result"] == "ABH"
     assert report["output_summary"] == {

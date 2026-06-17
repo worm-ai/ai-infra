@@ -144,6 +144,56 @@ def test_inspect_state_dir_reports_schema_drift_for_missing_columns(tmp_path):
     }
 
 
+def test_inspect_state_dir_reports_schema_drift_for_missing_compatibility_columns(tmp_path):
+    database = tmp_path / "runs.sqlite"
+    with closing(sqlite3.connect(database)) as connection:
+        with connection:
+            connection.executescript(
+                """
+                create table runs (
+                    run_id text primary key,
+                    workflow_id text not null,
+                    status text not null,
+                    inputs_json text not null,
+                    outputs_json text not null,
+                    workflow_source_path text,
+                    workflow_snapshot text,
+                    workflow_sha256 text,
+                    inputs_sha256 text,
+                    git_commit text,
+                    environment_json text
+                );
+                create table node_events (
+                    id integer primary key autoincrement,
+                    run_id text not null,
+                    node_id text not null,
+                    status text not null,
+                    input_json text not null,
+                    output_json text not null,
+                    metadata_json text
+                );
+                create table verifications (
+                    id integer primary key autoincrement,
+                    run_id text not null,
+                    status text not null,
+                    checks_json text not null
+                );
+                create table node_execution_reservations (
+                    id integer primary key autoincrement,
+                    run_id text not null,
+                    node_id text not null
+                );
+                """
+            )
+
+    health = inspect_state_dir(tmp_path)
+
+    assert health["ok"] is False
+    assert health["status"] == "schema_drift"
+    assert "compatibility_json" in health["tables"]["runs"]["missing_columns"]
+    assert "compatibility_json" in health["tables"]["verifications"]["missing_columns"]
+
+
 def test_inspect_state_dir_reports_schema_drift_for_incompatible_column_constraints(tmp_path):
     database = tmp_path / "runs.sqlite"
     with closing(sqlite3.connect(database)) as connection:

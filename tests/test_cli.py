@@ -37,7 +37,10 @@ def test_cli_version_matches_sdk_and_package_metadata(tmp_path):
 def test_cli_validate_run_status_logs_and_verify(tmp_path):
     validate = run_cli("validate", "examples/hello_workflow.yaml", state_dir=tmp_path)
     assert validate.returncode == 0
-    assert json.loads(validate.stdout)["ok"] is True
+    validate_payload = json.loads(validate.stdout)
+    assert validate_payload["ok"] is True
+    assert validate_payload["compatibility"]["status"] == "supported"
+    assert validate_payload["compatibility"]["schema_version"]["declared"] == "1"
 
     run = run_cli(
         "run",
@@ -76,7 +79,34 @@ def test_cli_validate_run_status_logs_and_verify(tmp_path):
 
     verify = run_cli("verify", run_id, state_dir=tmp_path)
     assert verify.returncode == 0
-    assert json.loads(verify.stdout)["verification"]["status"] == "passed"
+    verify_payload = json.loads(verify.stdout)
+    assert verify_payload["verification"]["status"] == "passed"
+    assert verify_payload["verification"]["compatibility"]["status"] == "supported"
+
+
+def test_cli_validate_reports_workflow_compatibility_failures(tmp_path):
+    workflow_path = tmp_path / "future_workflow.yaml"
+    workflow_path.write_text(
+        """
+id: cli-future-compatibility
+schema_version: "99"
+entrypoint: only
+nodes:
+  only:
+    type: template
+    template: "Future {topic}"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    validate = run_cli("validate", str(workflow_path), state_dir=tmp_path)
+
+    assert validate.returncode == 2
+    payload = json.loads(validate.stdout)
+    assert payload["ok"] is False
+    assert payload["compatibility"]["status"] == "future"
+    assert payload["compatibility"]["failure_category"] == "future_schema"
+    assert "schema_version '99'" in payload["error"]
 
 
 def test_cli_report_summarizes_failed_tool_run(tmp_path):

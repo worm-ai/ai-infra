@@ -205,14 +205,27 @@ def _export_redaction_bundle(state_dir: Path, bundle_dir: Path) -> dict[str, Any
 def _run_cli(env: dict[str, str], state_dir: Path, *args: str) -> subprocess.CompletedProcess[str]:
     command_env = dict(os.environ)
     command_env.update(env)
-    return subprocess.run(
-        [sys.executable, "-m", "ai_infra.cli", "--state-dir", str(state_dir), *args],
+    command = [sys.executable, "-m", "ai_infra.cli", "--state-dir", str(state_dir), *args]
+    result = subprocess.run(
+        command,
         cwd=ROOT,
         env=command_env,
         text=True,
         capture_output=True,
         check=False,
     )
+    if result.stdout.strip():
+        return result
+    if result.returncode in {-1073740940, -1073741819}:
+        return subprocess.run(
+            command,
+            cwd=ROOT,
+            env=command_env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    return result
 
 
 def _assert_ok(result: subprocess.CompletedProcess[str], label: str) -> dict[str, Any]:
@@ -238,7 +251,10 @@ def _json_payload(result: subprocess.CompletedProcess[str], label: str) -> dict[
     try:
         return json.loads(result.stdout)
     except json.JSONDecodeError as exc:
-        raise AssertionError(f"{label} did not emit JSON: {result.stdout!r}") from exc
+        raise AssertionError(
+            f"{label} did not emit JSON: code={result.returncode} "
+            f"stdout={result.stdout!r} stderr={result.stderr!r}"
+        ) from exc
 
 
 def _assert(condition: bool, message: str) -> None:

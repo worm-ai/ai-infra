@@ -8,12 +8,43 @@ import yaml
 
 
 class WorkflowValidationError(ValueError):
-    pass
+    def __init__(self, message: str, *, compatibility: dict[str, Any] | None = None):
+        super().__init__(message)
+        self.compatibility = compatibility
 
 
-TOP_LEVEL_FIELDS = {"id", "name", "version", "entrypoint", "nodes", "edges", "validations", "governance"}
+TOP_LEVEL_FIELDS = {
+    "id",
+    "name",
+    "version",
+    "schema_version",
+    "features",
+    "entrypoint",
+    "nodes",
+    "edges",
+    "validations",
+    "governance",
+}
 NODE_FIELDS = {"type", "template", "next", "tool", "config", "policy", "contract", "artifacts", "governance"}
 EDGE_FIELDS = {"from", "to"}
+SUPPORTED_SCHEMA_VERSIONS = {"1"}
+SUPPORTED_WORKFLOW_FEATURES = {
+    "template_nodes",
+    "tool_nodes",
+    "react_nodes",
+    "edge_list",
+    "validations",
+    "governance",
+    "retry_policy",
+    "output_contracts",
+    "artifacts",
+    "redaction",
+    "mcp_tools",
+    "openai_compatible_react_provider",
+}
+DEPRECATED_WORKFLOW_FEATURES = {
+    "legacy_llm_node": "react_nodes",
+}
 SUPPORTED_NODE_TYPES = {"template", "react", "tool", "llm", "validation"}
 SUPPORTED_TOOL_ADAPTERS = {"python", "shell", "http", "mcp"}
 SUPPORTED_REACT_PROVIDERS = {"mock", "openai-compatible"}
@@ -79,6 +110,8 @@ class Workflow:
     governance: dict[str, Any] = field(default_factory=dict)
     source_path: Path | None = None
     source_snapshot: str | None = None
+    schema_version: str = "1"
+    features: list[str] = field(default_factory=list)
 
     @property
     def node_map(self) -> dict[str, WorkflowNode]:
@@ -104,6 +137,8 @@ def load_workflow_from_source(source: str, source_path: str | Path | None = None
         id=workflow_id,
         name=_optional_string(raw, "name", default=workflow_id),
         version=_optional_string(raw, "version", default=""),
+        schema_version=_optional_string(raw, "schema_version", default="1") or "1",
+        features=_load_features(raw.get("features")),
         entrypoint=_optional_string(raw, "entrypoint", default=None),
         nodes=nodes,
         edges=edges,
@@ -114,7 +149,11 @@ def load_workflow_from_source(source: str, source_path: str | Path | None = None
     )
 
 
-def validate_workflow(workflow: Workflow) -> None:
+def validate_workflow(workflow: Workflow) -> dict[str, Any]:
+    compatibility = workflow_compatibility(workflow)
+    if compatibility["status"] in {"unsupported", "future"}:
+        raise WorkflowValidationError(_compatibility_error_message(compatibility), compatibility=compatibility)
+
     if not workflow.id:
         raise WorkflowValidationError("workflow id is required")
     if not workflow.entrypoint:
@@ -159,6 +198,80 @@ def validate_workflow(workflow: Workflow) -> None:
         _validate_run_validation(index, validation, node_ids)
 
     _validate_acyclic(workflow)
+    return compatibility
+
+
+def workflow_compatibility(workflow: Workflow) -> dict[str, Any]:
+    schema_version = str(workflow.schema_version or "1")
+    schema_status = "supported" if schema_version in SUPPORTED_SCHEMA_VERSIONS else "future"
+    diagnostics: list[dict[str, str]] = []
+    feature_evidence: list[dict[str, str]] = []
+    failure_category: str | None = None
+
+    if schema_status == "future":
+        diagnostics.append(
+            {
+                "category": "future_schema",
+                "severity": "error",
+                "message": (
+                    f"workflow schema_version {schema_version!r} is newer than supported schema versions: "
+                    f"{_supported_schema_versions_label()}"
+                ),
+            }
+        )
+        failure_category = "future_schema"
+
+    for feature in workflow.features:
+        if feature in SUPPORTED_WORKFLOW_FEATURES:
+            feature_evidence.append({"name": feature, "status": "supported"})
+            continue
+        if feature in DEPRECATED_WORKFLOW_FEATURES:
+            replacement = DEPRECATED_WORKFLOW_FEATURES[feature]
+            feature_evidence.append(
+                {
+                    "name": feature,
+                    "status": "deprecated",
+                    "replacement": replacement,
+                }
+            )
+            diagnostics.append(
+                {
+                    "category": "deprecated_feature",
+                    "severity": "warning",
+                    "message": f"feature {feature!r} is deprecated; use {replacement!r}",
+                }
+            )
+            continue
+        feature_evidence.append({"name": feature, "status": "unsupported"})
+        diagnostics.append(
+            {
+                "category": "unsupported_feature",
+                "severity": "error",
+                "message": f"feature {feature!r} is unsupported by this local DAG runtime",
+            }
+        )
+        failure_category = failure_category or "unsupported_feature"
+
+    if schema_status == "future":
+        status = "future"
+    elif any(item["status"] == "unsupported" for item in feature_evidence):
+        status = "unsupported"
+    elif any(item["status"] == "deprecated" for item in feature_evidence):
+        status = "deprecated"
+    else:
+        status = "supported"
+
+    return {
+        "schema_version": {
+            "declared": schema_version,
+            "supported": sorted(SUPPORTED_SCHEMA_VERSIONS),
+            "status": schema_status,
+        },
+        "features": feature_evidence,
+        "status": status,
+        "failure_category": failure_category,
+        "diagnostics": diagnostics,
+    }
 
 
 def _load_yaml_mapping(source: str) -> dict[str, Any]:
@@ -262,6 +375,19 @@ def _load_validations(raw_validations: Any) -> list[WorkflowValidation]:
             )
         )
     return validations
+
+
+def _load_features(raw_features: Any) -> list[str]:
+    if raw_features is None:
+        return []
+    if not isinstance(raw_features, list):
+        raise WorkflowValidationError("workflow features must be a list")
+    features: list[str] = []
+    for index, feature in enumerate(raw_features):
+        if not _is_non_empty_string(feature):
+            raise WorkflowValidationError(f"workflow features[{index}] must be a non-empty string")
+        features.append(str(feature))
+    return features
 
 
 def _validate_tool_node(node: WorkflowNode) -> None:
@@ -865,3 +991,18 @@ def _validate_acyclic(workflow: Workflow) -> None:
         visit(workflow.entrypoint, [workflow.entrypoint])
     for node in workflow.nodes:
         visit(node.id, [node.id])
+
+
+def _compatibility_error_message(compatibility: dict[str, Any]) -> str:
+    diagnostics = compatibility.get("diagnostics")
+    if isinstance(diagnostics, list):
+        for diagnostic in diagnostics:
+            if not isinstance(diagnostic, dict):
+                continue
+            if diagnostic.get("severity") == "error" and isinstance(diagnostic.get("message"), str):
+                return diagnostic["message"]
+    return "workflow compatibility check failed"
+
+
+def _supported_schema_versions_label() -> str:
+    return ", ".join(sorted(SUPPORTED_SCHEMA_VERSIONS))

@@ -52,9 +52,21 @@ def main() -> int:
 
         _assert(version_payload["package"] == "ai-infra", "version payload should identify package")
         _assert(validate_payload["ok"] is True, "installed validate should pass")
+        _assert(
+            validate_payload["compatibility"]["status"] == "supported",
+            "installed validate should expose workflow compatibility",
+        )
         _assert(run_payload["run"]["status"] == "completed", "installed run should complete")
         _assert(report_payload["report"]["status"] == "completed", "installed report should show completion")
+        _assert(
+            report_payload["report"]["compatibility"]["schema_version"]["declared"] == "1",
+            "installed report should include compatibility evidence",
+        )
         _assert(verify_payload["verification"]["status"] == "passed", "installed verify should pass")
+        _assert(
+            verify_payload["verification"]["compatibility"]["status"] == "supported",
+            "installed verify should include compatibility evidence",
+        )
         _assert(verify_bundle_payload["verification"]["status"] == "passed", "installed verify-bundle should pass")
         _assert(sdk_payload["version"] == version_payload["version"], "SDK version should match CLI version")
         _assert(sdk_payload["has_default_store"] is True, "SDK should export default_store")
@@ -71,6 +83,7 @@ def main() -> int:
             "commands": {
                 "version": version_payload["version"],
                 "validate": validate_payload["ok"],
+                "compatibility": validate_payload["compatibility"]["status"],
                 "run": run_payload["run"]["status"],
                 "report": report_payload["report"]["status"],
                 "verify": verify_payload["verification"]["status"],

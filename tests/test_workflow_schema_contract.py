@@ -13,6 +13,154 @@ def write_workflow(tmp_path, content: str) -> Path:
     return path
 
 
+def test_workflow_compatibility_contract_reports_supported_schema_and_features(tmp_path):
+    path = write_workflow(
+        tmp_path,
+        """
+id: compatibility-supported
+schema_version: "1"
+features:
+  - template_nodes
+  - edge_list
+entrypoint: draft
+nodes:
+  draft:
+    type: template
+    template: "Draft {topic}"
+""",
+    )
+
+    workflow = load_workflow(path)
+    compatibility = validate_workflow(workflow)
+
+    assert compatibility == {
+        "schema_version": {
+            "declared": "1",
+            "supported": ["1"],
+            "status": "supported",
+        },
+        "features": [
+            {"name": "template_nodes", "status": "supported"},
+            {"name": "edge_list", "status": "supported"},
+        ],
+        "status": "supported",
+        "failure_category": None,
+        "diagnostics": [],
+    }
+    assert workflow.schema_version == "1"
+    assert workflow.features == ["template_nodes", "edge_list"]
+
+
+def test_workflow_compatibility_contract_defaults_legacy_workflows_to_schema_one(tmp_path):
+    path = write_workflow(
+        tmp_path,
+        """
+id: compatibility-legacy
+entrypoint: draft
+nodes:
+  draft:
+    type: template
+    template: "Draft {topic}"
+""",
+    )
+
+    workflow = load_workflow(path)
+    compatibility = validate_workflow(workflow)
+
+    assert compatibility["schema_version"] == {
+        "declared": "1",
+        "supported": ["1"],
+        "status": "supported",
+    }
+    assert compatibility["status"] == "supported"
+
+
+def test_workflow_compatibility_contract_warns_on_deprecated_feature(tmp_path):
+    path = write_workflow(
+        tmp_path,
+        """
+id: compatibility-deprecated
+schema_version: "1"
+features:
+  - legacy_llm_node
+entrypoint: draft
+nodes:
+  draft:
+    type: template
+    template: "Draft {topic}"
+""",
+    )
+
+    workflow = load_workflow(path)
+    compatibility = validate_workflow(workflow)
+
+    assert compatibility["status"] == "deprecated"
+    assert compatibility["features"] == [
+        {
+            "name": "legacy_llm_node",
+            "status": "deprecated",
+            "replacement": "react_nodes",
+        }
+    ]
+    assert compatibility["diagnostics"] == [
+        {
+            "category": "deprecated_feature",
+            "severity": "warning",
+            "message": "feature 'legacy_llm_node' is deprecated; use 'react_nodes'",
+        }
+    ]
+
+
+def test_workflow_compatibility_contract_rejects_unsupported_feature(tmp_path):
+    path = write_workflow(
+        tmp_path,
+        """
+id: compatibility-unsupported
+schema_version: "1"
+features:
+  - distributed_a2a
+entrypoint: draft
+nodes:
+  draft:
+    type: template
+    template: "Draft {topic}"
+""",
+    )
+
+    workflow = load_workflow(path)
+
+    with pytest.raises(WorkflowValidationError) as error:
+        validate_workflow(workflow)
+
+    assert error.value.compatibility["status"] == "unsupported"
+    assert error.value.compatibility["failure_category"] == "unsupported_feature"
+    assert "feature 'distributed_a2a' is unsupported by this local DAG runtime" in str(error.value)
+
+
+def test_workflow_compatibility_contract_rejects_future_schema_version(tmp_path):
+    path = write_workflow(
+        tmp_path,
+        """
+id: compatibility-future
+schema_version: "99"
+entrypoint: draft
+nodes:
+  draft:
+    type: template
+    template: "Draft {topic}"
+""",
+    )
+
+    workflow = load_workflow(path)
+
+    with pytest.raises(WorkflowValidationError) as error:
+        validate_workflow(workflow)
+
+    assert error.value.compatibility["status"] == "future"
+    assert error.value.compatibility["failure_category"] == "future_schema"
+    assert "workflow schema_version '99' is newer than supported schema versions: 1" in str(error.value)
+
+
 @pytest.mark.parametrize(
     ("content", "message"),
     [

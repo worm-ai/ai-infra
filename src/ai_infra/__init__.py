@@ -1,7 +1,14 @@
 from importlib.metadata import PackageNotFoundError, version
 
 from .artifacts import EvidenceBundle, EvidenceBundleVerification, export_evidence_bundle, verify_evidence_bundle
-from .config import Workflow, WorkflowValidationError, load_workflow, load_workflow_from_source, validate_workflow
+from .config import (
+    Workflow,
+    WorkflowValidationError,
+    load_workflow,
+    load_workflow_from_source,
+    validate_workflow,
+    workflow_compatibility,
+)
 from .layers import DagWorkflow, PlanExecAgent, ReActAgent, SuperAgent
 from .maintenance import (
     apply_retention_cleanup,
@@ -89,6 +96,7 @@ __all__ = [
     "validate_run",
     "validate_stored_run",
     "validate_workflow",
+    "workflow_compatibility",
     "verify_evidence_bundle",
     "verify_release_trust_manifest",
     "write_release_trust_manifest",

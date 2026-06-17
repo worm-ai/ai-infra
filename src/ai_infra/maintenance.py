@@ -32,6 +32,7 @@ RUN_STORE_SCHEMA = {
         "inputs_sha256": {"type": "text"},
         "git_commit": {"type": "text"},
         "environment_json": {"type": "text"},
+        "compatibility_json": {"type": "text"},
     },
     "node_events": {
         "id": {"type": "integer", "primary_key": True, "autoincrement": True},
@@ -47,6 +48,7 @@ RUN_STORE_SCHEMA = {
         "run_id": {"type": "text", "not_null": True},
         "status": {"type": "text", "not_null": True},
         "checks_json": {"type": "text", "not_null": True},
+        "compatibility_json": {"type": "text"},
     },
     "node_execution_reservations": {
         "id": {"type": "integer", "primary_key": True, "autoincrement": True},

@@ -49,6 +49,8 @@ def test_run_workflow_persists_completed_run_and_node_events(tmp_path):
     assert saved.provenance.workflow_sha256 == _sha256_text(workflow_source)
     assert saved.provenance.inputs_sha256 == _sha256_text(_canonical_json({"topic": "ABH"}))
     assert "python_version" in saved.provenance.environment
+    assert saved.provenance.compatibility["status"] == "supported"
+    assert saved.provenance.compatibility["schema_version"]["declared"] == "1"
 
 
 def test_run_workflow_fails_fast_when_required_environment_is_missing(tmp_path, monkeypatch):
@@ -307,9 +309,42 @@ def test_validate_run_records_validation_results(tmp_path):
     verification = validate_run(result.run_id, workflow, store=store)
 
     assert verification.status == "passed"
+    assert verification.compatibility["status"] == "supported"
     assert [check.status for check in verification.checks] == ["passed", "passed", "passed"]
     saved = get_run(result.run_id, store=store)
     assert saved.verifications[-1].status == "passed"
+    assert saved.verifications[-1].compatibility["status"] == "supported"
+
+
+def test_deprecated_workflow_compatibility_is_persisted_without_failing_run_verification(tmp_path):
+    store = RunStore(tmp_path / "runs.sqlite")
+    workflow = load_workflow_from_source(
+        """
+id: deprecated-compatibility-run
+schema_version: "1"
+features:
+  - legacy_llm_node
+entrypoint: draft
+nodes:
+  draft:
+    type: template
+    template: "Draft {topic}"
+validations:
+  - type: run_status
+    equals: completed
+""".strip()
+    )
+
+    result = run_workflow(workflow, {"topic": "ABH"}, store=store)
+    verification = validate_stored_run(result.run_id, store=store)
+
+    assert result.status == "completed"
+    assert verification.status == "passed"
+    assert verification.compatibility["status"] == "deprecated"
+    assert verification.compatibility["diagnostics"][0]["category"] == "deprecated_feature"
+    saved = get_run(result.run_id, store=store)
+    assert saved.provenance is not None
+    assert saved.provenance.compatibility["status"] == "deprecated"
 
 
 def test_run_workflow_persists_all_fan_out_dag_node_events(tmp_path):

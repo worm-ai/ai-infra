@@ -9,7 +9,7 @@ from importlib import metadata
 from pathlib import Path
 from typing import Any
 
-from .config import Workflow
+from .config import Workflow, workflow_compatibility
 from .store import RunProvenance
 
 
@@ -23,6 +23,7 @@ def build_run_provenance(workflow: Workflow, inputs: dict[str, Any]) -> RunProve
         inputs_sha256=sha256_text(_canonical_json(inputs)),
         git_commit=_git_commit(workflow.source_path),
         environment=_environment_summary(),
+        compatibility=workflow_compatibility(workflow),
     )
 
 
@@ -38,6 +39,8 @@ def _workflow_snapshot(workflow: Workflow) -> str:
             "id": workflow.id,
             "name": workflow.name,
             "version": workflow.version,
+            "schema_version": workflow.schema_version,
+            "features": workflow.features,
             "entrypoint": workflow.entrypoint,
             "nodes": {
                 node.id: _node_snapshot(node)

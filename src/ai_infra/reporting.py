@@ -60,6 +60,7 @@ def build_stored_run_report(run: Any) -> dict[str, Any]:
         "run_id": run.run_id,
         "workflow_id": run.workflow_id,
         "status": run.status,
+        "compatibility": _compatibility_report(run.provenance),
         "inputs": run.inputs,
         "provenance": _provenance_report(run.provenance),
         "input_summary": _value_summary(run.inputs),
@@ -82,6 +83,28 @@ def _provenance_report(provenance: RunProvenance | None) -> dict[str, Any] | Non
         "inputs_sha256": provenance.inputs_sha256,
         "git_commit": provenance.git_commit,
         "environment": provenance.environment,
+    }
+
+
+def _compatibility_report(provenance: RunProvenance | None) -> dict[str, Any]:
+    if provenance is not None and provenance.compatibility:
+        return provenance.compatibility
+    return {
+        "schema_version": {
+            "declared": "unknown",
+            "supported": [],
+            "status": "unknown",
+        },
+        "features": [],
+        "status": "unknown",
+        "failure_category": None,
+        "diagnostics": [
+            {
+                "category": "missing_compatibility_evidence",
+                "severity": "warning",
+                "message": "run does not include workflow compatibility evidence",
+            }
+        ],
     }
 
 

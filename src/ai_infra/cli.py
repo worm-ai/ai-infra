@@ -154,8 +154,14 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "validate":
             workflow = load_workflow(args.workflow)
-            validate_workflow(workflow)
-            _print({"ok": True, "workflow": {"id": workflow.id, "nodes": [node.id for node in workflow.nodes]}})
+            compatibility = validate_workflow(workflow)
+            _print(
+                {
+                    "ok": True,
+                    "workflow": {"id": workflow.id, "nodes": [node.id for node in workflow.nodes]},
+                    "compatibility": compatibility,
+                }
+            )
             return 0
         if args.command == "run":
             workflow = load_workflow(args.workflow)
@@ -204,7 +210,13 @@ def main(argv: list[str] | None = None) -> int:
                 cleanup = plan_retention_cleanup(store, keep_last=args.keep_last, status=args.status)
             _print({"ok": True, "cleanup": cleanup})
             return 0
-    except (WorkflowValidationError, KeyError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
+    except WorkflowValidationError as exc:
+        payload: dict[str, Any] = {"ok": False, "error": str(exc)}
+        if exc.compatibility is not None:
+            payload["compatibility"] = exc.compatibility
+        _print(payload)
+        return 2
+    except (KeyError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
         _print({"ok": False, "error": str(exc)})
         return 2
     return 2

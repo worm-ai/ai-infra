@@ -33,6 +33,7 @@ class RunProvenance:
     inputs_sha256: str
     git_commit: str | None
     environment: dict[str, Any]
+    compatibility: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -41,6 +42,7 @@ class StoredVerification:
     run_id: str
     status: str
     checks: list[VerificationCheck]
+    compatibility: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -87,7 +89,8 @@ class RunStore:
                         workflow_sha256 text,
                         inputs_sha256 text,
                         git_commit text,
-                        environment_json text
+                        environment_json text,
+                        compatibility_json text
                     );
                     create table if not exists node_events (
                         id integer primary key autoincrement,
@@ -102,7 +105,8 @@ class RunStore:
                         id integer primary key autoincrement,
                         run_id text not null,
                         status text not null,
-                        checks_json text not null
+                        checks_json text not null,
+                        compatibility_json text
                     );
                     create table if not exists node_execution_reservations (
                         id integer primary key autoincrement,
@@ -127,6 +131,14 @@ class RunStore:
                     connection.execute("alter table runs add column git_commit text")
                 if "environment_json" not in columns:
                     connection.execute("alter table runs add column environment_json text")
+                if "compatibility_json" not in columns:
+                    connection.execute("alter table runs add column compatibility_json text")
+                verification_columns = {
+                    row["name"]
+                    for row in connection.execute("pragma table_info(verifications)").fetchall()
+                }
+                if "compatibility_json" not in verification_columns:
+                    connection.execute("alter table verifications add column compatibility_json text")
                 event_columns = {
                     row["name"]
                     for row in connection.execute("pragma table_info(node_events)").fetchall()
@@ -154,9 +166,10 @@ class RunStore:
                         workflow_sha256,
                         inputs_sha256,
                         git_commit,
-                        environment_json
+                        environment_json,
+                        compatibility_json
                     )
-                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         run.run_id,
@@ -170,6 +183,9 @@ class RunStore:
                         provenance.inputs_sha256 if provenance is not None else None,
                         provenance.git_commit if provenance is not None else None,
                         json.dumps(provenance.environment, ensure_ascii=False)
+                        if provenance is not None
+                        else None,
+                        json.dumps(provenance.compatibility, ensure_ascii=False)
                         if provenance is not None
                         else None,
                     ),
@@ -254,22 +270,35 @@ class RunStore:
                 )
                 return True, executions_used + 1
 
-    def add_verification(self, run_id: str, status: str, checks: list[VerificationCheck]) -> StoredVerification:
+    def add_verification(
+        self,
+        run_id: str,
+        status: str,
+        checks: list[VerificationCheck],
+        compatibility: dict[str, Any] | None = None,
+    ) -> StoredVerification:
         with closing(self._connect()) as connection:
             with connection:
                 cursor = connection.execute(
                     """
-                    insert into verifications (run_id, status, checks_json)
-                    values (?, ?, ?)
+                    insert into verifications (run_id, status, checks_json, compatibility_json)
+                    values (?, ?, ?, ?)
                     """,
                     (
                         run_id,
                         status,
                         json.dumps([check.__dict__ for check in checks], ensure_ascii=False),
+                        json.dumps(compatibility or {}, ensure_ascii=False),
                     ),
                 )
                 verification_id = int(cursor.lastrowid)
-        return StoredVerification(id=verification_id, run_id=run_id, status=status, checks=checks)
+        return StoredVerification(
+            id=verification_id,
+            run_id=run_id,
+            status=status,
+            checks=checks,
+            compatibility=compatibility or {},
+        )
 
     def table_row_counts(self, tables: list[str]) -> dict[str, int | None]:
         counts: dict[str, int | None] = {}
@@ -430,6 +459,7 @@ class RunStore:
                     )
                     for item in json.loads(row["checks_json"])
                 ],
+                compatibility=json.loads(row["compatibility_json"]) if row["compatibility_json"] else {},
             )
             for row in verification_rows
         ]
@@ -474,4 +504,5 @@ def _run_provenance_from_row(row: sqlite3.Row) -> RunProvenance | None:
         inputs_sha256=inputs_sha256,
         git_commit=row["git_commit"],
         environment=json.loads(environment_json) if environment_json else {},
+        compatibility=json.loads(row["compatibility_json"]) if row["compatibility_json"] else {},
     )

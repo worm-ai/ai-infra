@@ -16,7 +16,7 @@ PlanExec and Super-Agent remain future layers. They must build on the verified D
 
 ## Current Production Surface
 
-- YAML DAG workflow loading and schema validation.
+- YAML DAG workflow loading, schema validation, and local compatibility evidence.
 - LangGraph-backed local DAG execution.
 - Python, shell, HTTP, ReAct, OpenAI-compatible fake provider, and local/fake MCP tool boundaries.
 - SQLite run store with run status, node events, verification results, and provenance snapshots.
@@ -42,6 +42,8 @@ Validate a workflow:
 ```powershell
 uv run ai-infra validate examples/hello_workflow.yaml
 ```
+
+Validation returns a `compatibility` object with the accepted `schema_version`, declared workflow `features`, compatibility `status`, deterministic `failure_category`, and operator-facing diagnostics. Workflows that omit `schema_version` default to local schema `1`; unsupported features and future schema versions fail closed before execution.
 
 Run it with local input:
 
@@ -206,10 +208,10 @@ Each run persists:
 
 - Run inputs and outputs after configured redaction.
 - Ordered node events with inputs, outputs, status, metadata, attempts, tool invocation evidence, ReAct evidence, governance evidence, contracts, and artifacts.
-- Immutable workflow provenance with source hash and environment summary.
-- Verification checks declared by the workflow.
+- Immutable workflow provenance with source hash, environment summary, and workflow compatibility evidence.
+- Verification checks declared by the workflow plus the compatibility evidence accepted for the run.
 - Optional evidence bundles containing report JSON, inputs, events, redacted workflow snapshot, manifest digests, and collected artifacts.
-- Offline bundle verification with per-file SHA-256 checks, run identity checks, JSON/YAML schema checks, and redaction-path checks. This verifies internal bundle consistency; external authenticity and signing remain future work.
+- Offline bundle verification with per-file SHA-256 checks, run identity checks, JSON/YAML schema checks, compatibility summary checks, and redaction-path checks. This verifies internal bundle consistency; external authenticity and signing remain future work.
 
 The evidence model is designed for traceability, failure localization, cost/governance inspection, and audit review.
 

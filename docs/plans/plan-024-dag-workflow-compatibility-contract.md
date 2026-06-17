@@ -3,12 +3,12 @@
 ## Metadata
 
 - ID: plan-024-dag-workflow-compatibility-contract
-- Status: running
+- Status: closed
 - Attractor: attractor-industrial-agent-orchestration
 - Baseline: Plans 001-023 are closed with a local-first production DAG Workflow kernel, bounded ReAct atomic node support, OpenAI-compatible and MCP-reserved tool/provider boundaries, SQLite evidence, reports, offline evidence bundles, release installability/trust, and run store reliability. The remaining production-delivery gap is that workflow declarations and runtime behavior do not yet expose an explicit compatibility contract for schema versioning, feature support, migration diagnostics, and compatibility evidence across validate/run/report/verify/bundle/release flows.
 - Owner: engineering
 - Created: 2026-06-17T19:29:50.533133+00:00
-- Updated: 2026-06-17T19:30:10.582587+00:00
+- Updated: 2026-06-17T20:36:10.517395+00:00
 
 ## Goals
 
@@ -69,11 +69,14 @@
 - Reports, verification records, and evidence bundles contain compatibility evidence for accepted DAG runs.
 - Full targeted pytest and release/demo verifiers confirm existing production DAG behavior remains compatible.
 - Independent audit confirms the plan strengthens the active attractor without crossing PlanExec, Super-Agent, API/UI, live provider, or distributed boundaries.
+- audit-024-dag-workflow-compatibility-contract
 
 ## Verification Runs
 
-- 
+- ver-e24d84681f07
+- ver-7734bf6b4a77
+- ver-2258f40ac813
 
 ## Audits
 
-- 
+- audit-024-dag-workflow-compatibility-contract

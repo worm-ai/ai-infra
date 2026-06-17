@@ -29,6 +29,7 @@ class VerificationResult:
     run_id: str
     status: str
     checks: list[VerificationCheck]
+    compatibility: dict[str, Any]
 
 
 def default_store(state_dir: str | Path = ".ai-infra") -> RunStore:
@@ -175,11 +176,11 @@ def get_run(run_id: str, store: RunStore | None = None) -> StoredRun:
 
 
 def validate_run(run_id: str, workflow: Workflow, store: RunStore | None = None) -> VerificationResult:
-    validate_workflow(workflow)
+    compatibility = validate_workflow(workflow)
     run_store = store or default_store()
     stored = run_store.get_run(run_id)
     checks = _evaluate_workflow_validations(workflow, stored)
-    return _record_verification(run_store, run_id, checks)
+    return _record_verification(run_store, run_id, checks, compatibility)
 
 
 def validate_stored_run(run_id: str, store: RunStore | None = None) -> VerificationResult:
@@ -196,9 +197,10 @@ def validate_stored_run(run_id: str, store: RunStore | None = None) -> Verificat
             f"stored run references workflow {stored.workflow_id!r}, "
             f"but snapshot contains workflow {workflow.id!r}"
         )
+    validate_workflow(workflow)
     checks = [_evaluate_workflow_source_integrity(stored)]
     checks.extend(_evaluate_workflow_validations(workflow, stored))
-    return _record_verification(run_store, run_id, checks)
+    return _record_verification(run_store, run_id, checks, _stored_compatibility(stored))
 
 
 def _evaluate_workflow_validations(workflow: Workflow, stored: StoredRun) -> list[VerificationCheck]:
@@ -556,10 +558,38 @@ def _record_verification(
     run_store: RunStore,
     run_id: str,
     checks: list[VerificationCheck],
+    compatibility: dict[str, Any] | None = None,
 ) -> VerificationResult:
     status = "passed" if all(check.status == "passed" for check in checks) else "failed"
-    run_store.add_verification(run_id, status, checks)
-    return VerificationResult(run_id=run_id, status=status, checks=checks)
+    run_store.add_verification(run_id, status, checks, compatibility)
+    return VerificationResult(
+        run_id=run_id,
+        status=status,
+        checks=checks,
+        compatibility=compatibility or {},
+    )
+
+
+def _stored_compatibility(run: StoredRun) -> dict[str, Any]:
+    if run.provenance is not None and run.provenance.compatibility:
+        return run.provenance.compatibility
+    return {
+        "schema_version": {
+            "declared": "unknown",
+            "supported": [],
+            "status": "unknown",
+        },
+        "features": [],
+        "status": "unknown",
+        "failure_category": None,
+        "diagnostics": [
+            {
+                "category": "missing_compatibility_evidence",
+                "severity": "warning",
+                "message": "run does not include workflow compatibility evidence",
+            }
+        ],
+    }
 
 
 def _evaluate_workflow_source_integrity(run: StoredRun) -> VerificationCheck:
