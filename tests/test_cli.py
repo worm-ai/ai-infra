@@ -1,4 +1,5 @@
 import json
+import sqlite3
 import subprocess
 import sys
 from importlib.metadata import version
@@ -825,6 +826,7 @@ def test_cli_store_health_runs_and_cleanup_dry_run(tmp_path):
     assert health.returncode == 0
     health_payload = json.loads(health.stdout)
     assert health_payload["ok"] is True
+    assert health_payload["health"]["status"] == "healthy"
     assert health_payload["health"]["tables"]["runs"]["rows"] == 2
     assert health_payload["health"]["tables"]["node_events"]["rows"] == 3
 
@@ -851,9 +853,105 @@ def test_cli_store_health_does_not_create_missing_database(tmp_path):
     assert health.returncode == 0
     payload = json.loads(health.stdout)
     assert payload["ok"] is True
+    assert payload["health"]["ok"] is False
+    assert payload["health"]["status"] == "missing_database"
     assert payload["health"]["database"]["exists"] is False
     assert payload["health"]["tables"]["runs"] == {"present": False, "rows": 0}
     assert (tmp_path / "runs.sqlite").exists() is False
+
+
+def test_cli_store_health_reports_corrupted_database_without_traceback(tmp_path):
+    (tmp_path / "runs.sqlite").write_bytes(b"not sqlite")
+
+    health = run_cli("store-health", state_dir=tmp_path)
+
+    assert health.returncode == 0
+    payload = json.loads(health.stdout)
+    assert payload["ok"] is True
+    assert payload["health"]["ok"] is False
+    assert payload["health"]["status"] == "database_unreadable"
+    assert payload["health"]["database"]["readable"] is False
+    assert "Traceback" not in health.stderr
+
+
+def test_cli_store_health_reports_locked_database_without_traceback(tmp_path):
+    run = run_cli(
+        "run",
+        "examples/hello_workflow.yaml",
+        "--input-file",
+        "examples/hello_input.json",
+        state_dir=tmp_path,
+    )
+    assert run.returncode == 0
+    connection = sqlite3.connect(tmp_path / "runs.sqlite")
+    try:
+        connection.execute("begin exclusive")
+
+        health = run_cli("store-health", state_dir=tmp_path)
+
+        assert health.returncode == 0
+        payload = json.loads(health.stdout)
+        assert payload["ok"] is True
+        assert payload["health"]["ok"] is False
+        assert payload["health"]["status"] == "database_locked"
+        assert payload["health"]["database"]["error"]["category"] == "database_locked"
+        assert "Traceback" not in health.stderr
+    finally:
+        connection.rollback()
+        connection.close()
+
+
+def test_cli_store_backup_and_restore_preflight(tmp_path):
+    run = run_cli(
+        "run",
+        "examples/hello_workflow.yaml",
+        "--input-file",
+        "examples/hello_input.json",
+        state_dir=tmp_path,
+    )
+    assert run.returncode == 0
+    backup_path = tmp_path / "backups" / "runs.sqlite"
+
+    backup = run_cli("store-backup", "--output", str(backup_path), state_dir=tmp_path)
+    preflight = run_cli(
+        "store-restore-preflight",
+        str(backup_path),
+        "--restore-state-dir",
+        str(tmp_path / "restore"),
+        state_dir=tmp_path,
+    )
+
+    assert backup.returncode == 0
+    backup_payload = json.loads(backup.stdout)
+    assert backup_payload["ok"] is True
+    assert backup_payload["backup"]["status"] == "backed_up"
+    assert backup_payload["backup"]["backup"]["path"] == str(backup_path)
+    assert backup_payload["backup"]["health"]["status"] == "healthy"
+    assert preflight.returncode == 0
+    preflight_payload = json.loads(preflight.stdout)
+    assert preflight_payload["ok"] is True
+    assert preflight_payload["restore_preflight"]["status"] == "restore_preflight_passed"
+    assert preflight_payload["restore_preflight"]["health"]["tables"]["runs"]["rows"] == 1
+
+
+def test_cli_store_restore_preflight_reports_corrupted_backup(tmp_path):
+    backup_path = tmp_path / "bad-backup.sqlite"
+    backup_path.write_bytes(b"not sqlite")
+
+    preflight = run_cli(
+        "store-restore-preflight",
+        str(backup_path),
+        "--restore-state-dir",
+        str(tmp_path / "restore"),
+        state_dir=tmp_path,
+    )
+
+    assert preflight.returncode == 1
+    payload = json.loads(preflight.stdout)
+    assert payload["ok"] is False
+    assert payload["restore_preflight"]["status"] == "restore_preflight_failed"
+    assert payload["restore_preflight"]["health"]["status"] == "database_unreadable"
+    assert (tmp_path / "restore").exists() is False
 
 
 def test_cli_cleanup_apply_removes_old_run(tmp_path):

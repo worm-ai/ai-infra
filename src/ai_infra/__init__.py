@@ -5,10 +5,12 @@ from .config import Workflow, WorkflowValidationError, load_workflow, load_workf
 from .layers import DagWorkflow, PlanExecAgent, ReActAgent, SuperAgent
 from .maintenance import (
     apply_retention_cleanup,
+    backup_run_store,
     inspect_run_store,
     inspect_state_dir,
     list_run_summaries,
     plan_retention_cleanup,
+    preflight_restore_run_store,
 )
 from .react import ReActExecution, ReActModelConfig, ReActStepEvidence, execute_react_node
 from .release_trust import (
@@ -64,6 +66,7 @@ __all__ = [
     "WorkflowValidationError",
     "__version__",
     "apply_retention_cleanup",
+    "backup_run_store",
     "build_run_report",
     "build_release_trust_manifest",
     "build_stored_run_report",
@@ -80,6 +83,7 @@ __all__ = [
     "load_workflow",
     "load_workflow_from_source",
     "plan_retention_cleanup",
+    "preflight_restore_run_store",
     "resume_workflow",
     "run_workflow",
     "validate_run",

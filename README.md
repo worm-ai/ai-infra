@@ -21,7 +21,7 @@ PlanExec and Super-Agent remain future layers. They must build on the verified D
 - Python, shell, HTTP, ReAct, OpenAI-compatible fake provider, and local/fake MCP tool boundaries.
 - SQLite run store with run status, node events, verification results, and provenance snapshots.
 - Retry, failure policy, output contracts, resumption, governance budgets, redaction, artifact evidence, and retention helpers.
-- CLI commands for validate, run, resume, status, logs, report, verify, export-bundle, verify-bundle, runs, store-health, and cleanup.
+- CLI commands for validate, run, resume, status, logs, report, verify, export-bundle, verify-bundle, runs, store-health, store-backup, store-restore-preflight, and cleanup.
 - SDK functions for local embedding in Python applications.
 
 ## Prerequisites
@@ -67,6 +67,25 @@ uv run python scripts/verify_cli_production_demo.py
 ```
 
 That verifier uses temporary local state and does not require external credentials.
+
+## Local Run Store Reliability
+
+The local SQLite run store is the production evidence foundation for DAG runs, node events, reports, verification records, and maintenance operations. Inspect its health without creating a missing database:
+
+```powershell
+uv run ai-infra store-health
+```
+
+The health payload reports structured local evidence for healthy stores, missing state directories, missing databases, unreadable or corrupted databases, locked/busy databases, schema drift, table row counts, and artifact directory summary.
+
+Create and verify a local backup:
+
+```powershell
+uv run ai-infra store-backup --output .ai-infra/backups/runs.sqlite
+uv run ai-infra store-restore-preflight .ai-infra/backups/runs.sqlite --restore-state-dir .ai-infra-restore
+```
+
+Backup uses SQLite's local backup API so the copied database is a consistent SQLite snapshot rather than a raw file copy. Backup and restore preflight stay local. They do not require credentials, network access, external backup services, a remote database, scheduler, API/UI, PlanExec, or Super-Agent runtime. Restore preflight validates the backup and target evidence without creating or overwriting the restore target.
 
 ## Local Release Packaging
 
@@ -129,7 +148,10 @@ from ai_infra import (
     default_store,
     export_evidence_bundle,
     get_run,
+    backup_run_store,
+    inspect_state_dir,
     load_workflow,
+    preflight_restore_run_store,
     run_workflow,
     validate_stored_run,
     validate_workflow,
@@ -147,9 +169,18 @@ run = get_run(result.run_id, store=store)
 report = build_run_report(result.run_id, store=store)
 bundle = export_evidence_bundle(run, report, ".ai-infra/bundles")
 bundle_verification = verify_evidence_bundle(bundle.path)
+health = inspect_state_dir(".ai-infra")
+backup = backup_run_store(".ai-infra", ".ai-infra/backups/runs.sqlite")
+restore_preflight = preflight_restore_run_store(
+    ".ai-infra/backups/runs.sqlite",
+    restore_state_dir=".ai-infra-restore",
+)
 
 assert verification.status == "passed"
 assert bundle_verification.status == "passed"
+assert health["ok"] is True
+assert backup["ok"] is True
+assert restore_preflight["ok"] is True
 print(result.run_id, bundle.path)
 ```
 
@@ -191,6 +222,7 @@ abh doctor --json
 uv run pytest -q
 uv run python scripts/verify_cli_production_demo.py
 uv run python scripts/verify_cli_bundle_integrity.py
+uv run python scripts/verify_cli_run_store_reliability.py
 ```
 
 Focused verifier scripts:

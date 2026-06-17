@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import hashlib
+import os
+import shutil
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -15,54 +19,151 @@ RUN_STORE_TABLES = [
     "node_execution_reservations",
 ]
 
+RUN_STORE_SCHEMA = {
+    "runs": {
+        "run_id": {"type": "text", "primary_key": True},
+        "workflow_id": {"type": "text", "not_null": True},
+        "status": {"type": "text", "not_null": True},
+        "inputs_json": {"type": "text", "not_null": True},
+        "outputs_json": {"type": "text", "not_null": True},
+        "workflow_source_path": {"type": "text"},
+        "workflow_snapshot": {"type": "text"},
+        "workflow_sha256": {"type": "text"},
+        "inputs_sha256": {"type": "text"},
+        "git_commit": {"type": "text"},
+        "environment_json": {"type": "text"},
+    },
+    "node_events": {
+        "id": {"type": "integer", "primary_key": True, "autoincrement": True},
+        "run_id": {"type": "text", "not_null": True},
+        "node_id": {"type": "text", "not_null": True},
+        "status": {"type": "text", "not_null": True},
+        "input_json": {"type": "text", "not_null": True},
+        "output_json": {"type": "text", "not_null": True},
+        "metadata_json": {"type": "text"},
+    },
+    "verifications": {
+        "id": {"type": "integer", "primary_key": True, "autoincrement": True},
+        "run_id": {"type": "text", "not_null": True},
+        "status": {"type": "text", "not_null": True},
+        "checks_json": {"type": "text", "not_null": True},
+    },
+    "node_execution_reservations": {
+        "id": {"type": "integer", "primary_key": True, "autoincrement": True},
+        "run_id": {"type": "text", "not_null": True},
+        "node_id": {"type": "text", "not_null": True},
+    },
+}
 
-def inspect_run_store(store: RunStore) -> dict[str, Any]:
-    row_counts = store.table_row_counts(RUN_STORE_TABLES)
-    artifacts = _artifact_dir_summary(store.state_dir / "artifacts")
-    return _health_payload(
+
+def inspect_run_store(store: RunStore, *, timeout_seconds: float = 1.0) -> dict[str, Any]:
+    return _inspect_database_path(
+        state_dir=store.state_dir,
         database_path=store.path,
-        row_counts=row_counts,
-        artifacts=artifacts,
+        artifact_dir=store.state_dir / "artifacts",
+        timeout_seconds=timeout_seconds,
     )
 
 
-def inspect_state_dir(state_dir: str | Path) -> dict[str, Any]:
+def inspect_state_dir(state_dir: str | Path, *, timeout_seconds: float = 1.0) -> dict[str, Any]:
     root = Path(state_dir)
-    database_path = root / "runs.sqlite"
-    if not database_path.exists():
-        row_counts: dict[str, int | None] = {table: None for table in RUN_STORE_TABLES}
-    else:
-        row_counts = _readonly_table_row_counts(database_path)
-    artifacts = _artifact_dir_summary(root / "artifacts")
-    return _health_payload(
-        database_path=database_path,
-        row_counts=row_counts,
-        artifacts=artifacts,
+    return _inspect_database_path(
+        state_dir=root,
+        database_path=root / "runs.sqlite",
+        artifact_dir=root / "artifacts",
+        timeout_seconds=timeout_seconds,
     )
 
 
-def _health_payload(
+def backup_run_store(
+    state_dir: str | Path,
+    backup_path: str | Path,
     *,
-    database_path: Path,
-    row_counts: dict[str, int | None],
-    artifacts: dict[str, Any],
+    timeout_seconds: float = 1.0,
 ) -> dict[str, Any]:
-    tables = {
-        table: {
-            "present": row_counts[table] is not None,
-            "rows": row_counts[table] if row_counts[table] is not None else 0,
+    root = Path(state_dir)
+    source_path = root / "runs.sqlite"
+    target_path = Path(backup_path)
+    source_health = inspect_state_dir(root, timeout_seconds=timeout_seconds)
+    if _same_path(source_path, target_path):
+        return {
+            "ok": False,
+            "status": "backup_target_conflict",
+            "source": _file_summary(source_path),
+            "backup": _file_summary(target_path),
+            "health": source_health,
+            "error": {
+                "category": "same_file",
+                "message": "backup target must not be the live run store database",
+            },
         }
-        for table in RUN_STORE_TABLES
-    }
+    if not source_health["ok"]:
+        return {
+            "ok": False,
+            "status": "source_unhealthy",
+            "source": _file_summary(source_path),
+            "backup": _file_summary(target_path),
+            "health": source_health,
+        }
+
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_target_path = _temporary_backup_path(target_path)
+    try:
+        _backup_sqlite_database(source_path, temporary_target_path, timeout_seconds=timeout_seconds)
+        os.replace(temporary_target_path, target_path)
+    except (OSError, sqlite3.Error) as exc:
+        _remove_file_if_exists(temporary_target_path)
+        return {
+            "ok": False,
+            "status": "backup_failed",
+            "source": _file_summary(source_path),
+            "backup": _file_summary(target_path),
+            "health": source_health,
+            "error": _backup_error_payload(exc),
+        }
+
+    backup_health = _inspect_database_path(
+        state_dir=target_path.parent,
+        database_path=target_path,
+        artifact_dir=target_path.parent / "artifacts",
+        timeout_seconds=timeout_seconds,
+    )
+    status = "backed_up" if backup_health["ok"] else "backup_verify_failed"
     return {
-        "ok": all(table["present"] for table in tables.values()),
-        "database": {
-            "path": str(database_path),
-            "exists": database_path.exists(),
-            "size_bytes": database_path.stat().st_size if database_path.exists() else 0,
+        "ok": backup_health["ok"],
+        "status": status,
+        "source": _file_summary(source_path),
+        "backup": _file_summary(target_path),
+        "health": backup_health,
+    }
+
+
+def preflight_restore_run_store(
+    backup_path: str | Path,
+    *,
+    restore_state_dir: str | Path,
+    timeout_seconds: float = 1.0,
+) -> dict[str, Any]:
+    source = Path(backup_path)
+    restore_root = Path(restore_state_dir)
+    restore_database_path = restore_root / "runs.sqlite"
+    health = _inspect_database_path(
+        state_dir=source.parent,
+        database_path=source,
+        artifact_dir=source.parent / "artifacts",
+        timeout_seconds=timeout_seconds,
+    )
+    ok = bool(health["ok"])
+    return {
+        "ok": ok,
+        "status": "restore_preflight_passed" if ok else "restore_preflight_failed",
+        "backup": _file_summary(source),
+        "restore_target": {
+            "state_dir": str(restore_root),
+            "database_path": str(restore_database_path),
+            "would_overwrite": restore_database_path.exists(),
         },
-        "tables": tables,
-        "artifacts": artifacts,
+        "health": health,
     }
 
 
@@ -70,9 +171,112 @@ def list_run_summaries(store: RunStore, status: str | None = None) -> list[dict[
     return store.list_run_summaries(status=status)
 
 
-def _readonly_table_row_counts(database_path: Path) -> dict[str, int | None]:
+def _inspect_database_path(
+    *,
+    state_dir: Path,
+    database_path: Path,
+    artifact_dir: Path,
+    timeout_seconds: float,
+) -> dict[str, Any]:
+    artifacts = _artifact_dir_summary(artifact_dir)
+    state_dir_exists = state_dir.exists()
+    base = {
+        "state_dir": {"path": str(state_dir), "exists": state_dir_exists},
+        "database": {
+            "path": str(database_path),
+            "exists": database_path.exists(),
+            "size_bytes": database_path.stat().st_size if database_path.exists() else 0,
+            "readable": False,
+        },
+        "tables": _missing_tables_payload(),
+        "artifacts": artifacts,
+        "checks": [],
+    }
+
+    if not state_dir_exists:
+        checks = [
+            {
+                "name": "state_dir",
+                "status": "failed",
+                "message": "state directory is missing",
+            }
+        ]
+        return {**base, "ok": False, "status": "missing_state_dir", "checks": checks}
+
+    checks = [
+        {
+            "name": "state_dir",
+            "status": "passed",
+            "message": "state directory exists",
+        }
+    ]
+    if not database_path.exists():
+        checks.append(
+            {
+                "name": "database",
+                "status": "failed",
+                "message": "run store database is missing",
+            }
+        )
+        return {**base, "ok": False, "status": "missing_database", "checks": checks}
+
+    try:
+        tables = _readonly_table_report(database_path, timeout_seconds=timeout_seconds)
+    except sqlite3.Error as exc:
+        error = _sqlite_error_payload(exc)
+        checks.append(
+            {
+                "name": "database_read",
+                "status": "failed",
+                "message": error["message"],
+            }
+        )
+        status = "database_locked" if error["category"] == "database_locked" else "database_unreadable"
+        return {
+            **base,
+            "ok": False,
+            "status": status,
+            "database": {**base["database"], "readable": False, "error": error},
+            "checks": checks,
+        }
+
+    checks.append(
+        {
+            "name": "database_read",
+            "status": "passed",
+            "message": "run store database is readable",
+        }
+    )
+    schema_ok = all(table["present"] and table.get("schema_ok") for table in tables.values())
+    checks.append(
+        {
+            "name": "schema",
+            "status": "passed" if schema_ok else "failed",
+            "message": "run store schema is compatible"
+            if schema_ok
+            else "run store schema drift detected",
+        }
+    )
+    return {
+        **base,
+        "ok": schema_ok,
+        "status": "healthy" if schema_ok else "schema_drift",
+        "database": {**base["database"], "readable": True},
+        "tables": tables,
+        "checks": checks,
+    }
+
+
+def _missing_tables_payload() -> dict[str, dict[str, int | bool]]:
+    return {
+        table: {"present": False, "rows": 0}
+        for table in RUN_STORE_TABLES
+    }
+
+
+def _readonly_table_report(database_path: Path, *, timeout_seconds: float) -> dict[str, dict[str, Any]]:
     uri = f"file:{database_path.as_posix()}?mode=ro"
-    with sqlite3.connect(uri, uri=True) as connection:
+    with closing(sqlite3.connect(uri, uri=True, timeout=timeout_seconds)) as connection:
         connection.row_factory = sqlite3.Row
         existing_tables = {
             row["name"]
@@ -80,14 +284,165 @@ def _readonly_table_row_counts(database_path: Path) -> dict[str, int | None]:
                 "select name from sqlite_master where type = 'table'"
             ).fetchall()
         }
-        counts: dict[str, int | None] = {}
+        tables: dict[str, dict[str, Any]] = {}
         for table in RUN_STORE_TABLES:
             if table not in existing_tables:
-                counts[table] = None
+                tables[table] = {"present": False, "rows": 0}
                 continue
+            columns = {
+                row["name"]
+                for row in connection.execute(f"pragma table_info({table})").fetchall()
+            }
+            expected_schema = RUN_STORE_SCHEMA[table]
+            missing_columns = [
+                column
+                for column in expected_schema
+                if column not in columns
+            ]
+            create_sql = _table_create_sql(connection, table)
+            incompatible_columns = _incompatible_columns(
+                table_info=connection.execute(f"pragma table_info({table})").fetchall(),
+                expected_schema=expected_schema,
+                create_sql=create_sql,
+            )
             row = connection.execute(f"select count(*) as count from {table}").fetchone()
-            counts[table] = int(row["count"]) if row is not None else 0
-    return counts
+            tables[table] = {
+                "present": True,
+                "rows": int(row["count"]) if row is not None else 0,
+                "schema_ok": not missing_columns and not incompatible_columns,
+                "missing_columns": missing_columns,
+                "incompatible_columns": incompatible_columns,
+            }
+    return tables
+
+
+def _sqlite_error_payload(exc: sqlite3.Error) -> dict[str, str]:
+    message = str(exc)
+    normalized_message = message.lower()
+    return {
+        "category": "database_locked"
+        if "locked" in normalized_message or "busy" in normalized_message
+        else "sqlite_error",
+        "message": message,
+    }
+
+
+def _backup_error_payload(exc: OSError | sqlite3.Error) -> dict[str, str]:
+    if isinstance(exc, sqlite3.Error):
+        return _sqlite_error_payload(exc)
+    return {"category": "filesystem_error", "message": str(exc)}
+
+
+def _backup_sqlite_database(
+    source_path: Path,
+    target_path: Path,
+    *,
+    timeout_seconds: float,
+) -> None:
+    source_uri = f"file:{source_path.as_posix()}?mode=ro"
+    with closing(sqlite3.connect(source_uri, uri=True, timeout=timeout_seconds)) as source:
+        with closing(sqlite3.connect(target_path, timeout=timeout_seconds)) as target:
+            source.backup(target)
+
+
+def _same_path(first: Path, second: Path) -> bool:
+    try:
+        return first.resolve() == second.resolve()
+    except OSError:
+        return first.absolute() == second.absolute()
+
+
+def _temporary_backup_path(target_path: Path) -> Path:
+    return target_path.with_name(f".{target_path.name}.tmp")
+
+
+def _remove_file_if_exists(path: Path) -> None:
+    try:
+        if path.exists() and path.is_file():
+            path.unlink()
+    except OSError:
+        return
+
+
+def _incompatible_columns(
+    *,
+    table_info: list[sqlite3.Row],
+    expected_schema: dict[str, dict[str, bool | str]],
+    create_sql: str,
+) -> list[dict[str, Any]]:
+    actual_by_name = {str(row["name"]): row for row in table_info}
+    normalized_create_sql = create_sql.lower()
+    incompatible: list[dict[str, Any]] = []
+    for column, expected in expected_schema.items():
+        row = actual_by_name.get(column)
+        if row is None:
+            continue
+        actual_type = str(row["type"] or "").lower()
+        expected_type = str(expected.get("type", "")).lower()
+        if expected_type and actual_type != expected_type:
+            incompatible.append(
+                {
+                    "column": column,
+                    "expected": {"type": expected_type},
+                    "actual": {"type": actual_type},
+                }
+            )
+        expected_not_null = bool(expected.get("not_null", False))
+        actual_not_null = bool(row["notnull"])
+        if expected_not_null and not actual_not_null:
+            incompatible.append(
+                {
+                    "column": column,
+                    "expected": {"not_null": True},
+                    "actual": {"not_null": False},
+                }
+            )
+        expected_primary_key = bool(expected.get("primary_key", False))
+        actual_primary_key = bool(row["pk"])
+        if expected_primary_key and not actual_primary_key:
+            incompatible.append(
+                {
+                    "column": column,
+                    "expected": {"primary_key": True},
+                    "actual": {"primary_key": False},
+                }
+            )
+        expected_autoincrement = bool(expected.get("autoincrement", False))
+        if expected_autoincrement and "autoincrement" not in normalized_create_sql:
+            incompatible.append(
+                {
+                    "column": column,
+                    "expected": {"autoincrement": True},
+                    "actual": {"autoincrement": False},
+                }
+            )
+    return incompatible
+
+
+def _table_create_sql(connection: sqlite3.Connection, table: str) -> str:
+    row = connection.execute(
+        "select sql from sqlite_master where type = 'table' and name = ?",
+        (table,),
+    ).fetchone()
+    return str(row["sql"] if row is not None and row["sql"] is not None else "")
+
+
+def _file_summary(path: Path) -> dict[str, Any]:
+    exists = path.exists()
+    return {
+        "path": str(path),
+        "exists": exists,
+        "size_bytes": path.stat().st_size if exists and path.is_file() else 0,
+        "sha256": _file_sha256(path) if exists and path.is_file() else None,
+    }
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def plan_retention_cleanup(

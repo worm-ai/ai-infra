@@ -12,9 +12,11 @@ from .config import WorkflowValidationError, load_workflow, validate_workflow
 from . import __version__
 from .maintenance import (
     apply_retention_cleanup,
+    backup_run_store,
     inspect_state_dir,
     list_run_summaries,
     plan_retention_cleanup,
+    preflight_restore_run_store,
 )
 from .release_trust import (
     build_release_trust_manifest,
@@ -84,6 +86,13 @@ def main(argv: list[str] | None = None) -> int:
 
     subparsers.add_parser("store-health")
 
+    backup_parser = subparsers.add_parser("store-backup")
+    backup_parser.add_argument("--output", required=True)
+
+    restore_preflight_parser = subparsers.add_parser("store-restore-preflight")
+    restore_preflight_parser.add_argument("backup")
+    restore_preflight_parser.add_argument("--restore-state-dir", required=True)
+
     runs_parser = subparsers.add_parser("runs")
     runs_parser.add_argument("--status")
 
@@ -126,6 +135,19 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "store-health":
         _print({"ok": True, "health": inspect_state_dir(args.state_dir)})
         return 0
+
+    if args.command == "store-backup":
+        backup = backup_run_store(args.state_dir, args.output)
+        _print({"ok": backup["ok"], "backup": backup})
+        return 0 if backup["ok"] else 1
+
+    if args.command == "store-restore-preflight":
+        preflight = preflight_restore_run_store(
+            args.backup,
+            restore_state_dir=args.restore_state_dir,
+        )
+        _print({"ok": preflight["ok"], "restore_preflight": preflight})
+        return 0 if preflight["ok"] else 1
 
     store = default_store(args.state_dir)
 
@@ -212,6 +234,8 @@ def _contains_subcommand(argv: list[str]) -> bool:
             "release-manifest",
             "verify-release",
             "store-health",
+            "store-backup",
+            "store-restore-preflight",
             "runs",
             "cleanup",
         }

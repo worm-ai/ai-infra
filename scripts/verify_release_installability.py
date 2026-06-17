@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import tarfile
+import time
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -121,7 +122,7 @@ def _packaged_examples(python: Path, cwd: Path) -> dict[str, Any]:
     return payload
 
 
-def _run(command: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+def _run(command: list[str], cwd: Path, *, attempts: int = 2) -> subprocess.CompletedProcess[str]:
     env = dict(os.environ)
     existing_pythonpath = env.get("PYTHONPATH")
     if existing_pythonpath:
@@ -130,15 +131,33 @@ def _run(command: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
             env["PYTHONPATH"] = os.pathsep.join(paths)
         else:
             env.pop("PYTHONPATH", None)
-    result = subprocess.run(command, cwd=cwd, env=env, text=True, capture_output=True, check=False)
+    failures: list[subprocess.CompletedProcess[str]] = []
+    for attempt in range(1, attempts + 1):
+        result = subprocess.run(
+            command,
+            cwd=cwd,
+            env=env,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode == 0:
+            return result
+        failures.append(result)
+        if attempt < attempts:
+            time.sleep(0.5)
+    result = failures[-1]
     if result.returncode != 0:
         raise AssertionError(
             f"command failed: {' '.join(command)}\n"
+            f"attempts={attempts}\n"
             f"cwd={cwd}\n"
             f"stdout={result.stdout}\n"
             f"stderr={result.stderr}"
         )
-    return result
+    raise AssertionError("unreachable command execution state")
 
 
 def _json_payload(stdout: str, label: tuple[str, ...]) -> dict[str, Any]:

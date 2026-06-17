@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import closing
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -71,128 +72,112 @@ class RunStore:
         return connection
 
     def _initialize(self) -> None:
-        with self._connect() as connection:
-            connection.executescript(
-                """
-                create table if not exists runs (
-                    run_id text primary key,
-                    workflow_id text not null,
-                    status text not null,
-                    inputs_json text not null,
-                    outputs_json text not null,
-                    workflow_source_path text,
-                    workflow_snapshot text,
-                    workflow_sha256 text,
-                    inputs_sha256 text,
-                    git_commit text,
-                    environment_json text
-                );
-                create table if not exists node_events (
-                    id integer primary key autoincrement,
-                    run_id text not null,
-                    node_id text not null,
-                    status text not null,
-                    input_json text not null,
-                    output_json text not null,
-                    metadata_json text
-                );
-                create table if not exists verifications (
-                    id integer primary key autoincrement,
-                    run_id text not null,
-                    status text not null,
-                    checks_json text not null
-                );
-                create table if not exists node_execution_reservations (
-                    id integer primary key autoincrement,
-                    run_id text not null,
-                    node_id text not null
-                );
-                """
-            )
-            columns = {
-                row["name"]
-                for row in connection.execute("pragma table_info(runs)").fetchall()
-            }
-            if "workflow_source_path" not in columns:
-                connection.execute("alter table runs add column workflow_source_path text")
-            if "workflow_snapshot" not in columns:
-                connection.execute("alter table runs add column workflow_snapshot text")
-            if "workflow_sha256" not in columns:
-                connection.execute("alter table runs add column workflow_sha256 text")
-            if "inputs_sha256" not in columns:
-                connection.execute("alter table runs add column inputs_sha256 text")
-            if "git_commit" not in columns:
-                connection.execute("alter table runs add column git_commit text")
-            if "environment_json" not in columns:
-                connection.execute("alter table runs add column environment_json text")
-            event_columns = {
-                row["name"]
-                for row in connection.execute("pragma table_info(node_events)").fetchall()
-            }
-            if "metadata_json" not in event_columns:
-                connection.execute("alter table node_events add column metadata_json text")
+        with closing(self._connect()) as connection:
+            with connection:
+                connection.executescript(
+                    """
+                    create table if not exists runs (
+                        run_id text primary key,
+                        workflow_id text not null,
+                        status text not null,
+                        inputs_json text not null,
+                        outputs_json text not null,
+                        workflow_source_path text,
+                        workflow_snapshot text,
+                        workflow_sha256 text,
+                        inputs_sha256 text,
+                        git_commit text,
+                        environment_json text
+                    );
+                    create table if not exists node_events (
+                        id integer primary key autoincrement,
+                        run_id text not null,
+                        node_id text not null,
+                        status text not null,
+                        input_json text not null,
+                        output_json text not null,
+                        metadata_json text
+                    );
+                    create table if not exists verifications (
+                        id integer primary key autoincrement,
+                        run_id text not null,
+                        status text not null,
+                        checks_json text not null
+                    );
+                    create table if not exists node_execution_reservations (
+                        id integer primary key autoincrement,
+                        run_id text not null,
+                        node_id text not null
+                    );
+                    """
+                )
+                columns = {
+                    row["name"]
+                    for row in connection.execute("pragma table_info(runs)").fetchall()
+                }
+                if "workflow_source_path" not in columns:
+                    connection.execute("alter table runs add column workflow_source_path text")
+                if "workflow_snapshot" not in columns:
+                    connection.execute("alter table runs add column workflow_snapshot text")
+                if "workflow_sha256" not in columns:
+                    connection.execute("alter table runs add column workflow_sha256 text")
+                if "inputs_sha256" not in columns:
+                    connection.execute("alter table runs add column inputs_sha256 text")
+                if "git_commit" not in columns:
+                    connection.execute("alter table runs add column git_commit text")
+                if "environment_json" not in columns:
+                    connection.execute("alter table runs add column environment_json text")
+                event_columns = {
+                    row["name"]
+                    for row in connection.execute("pragma table_info(node_events)").fetchall()
+                }
+                if "metadata_json" not in event_columns:
+                    connection.execute("alter table node_events add column metadata_json text")
 
     def save_run(self, run: StoredRun) -> None:
         provenance = run.provenance
         workflow_source_path = (
             provenance.workflow_source_path if provenance is not None else run.workflow_source_path
         )
-        with self._connect() as connection:
-            connection.execute(
-                """
-                insert or replace into runs (
-                    run_id,
-                    workflow_id,
-                    status,
-                    inputs_json,
-                    outputs_json,
-                    workflow_source_path,
-                    workflow_snapshot,
-                    workflow_sha256,
-                    inputs_sha256,
-                    git_commit,
-                    environment_json
+        with closing(self._connect()) as connection:
+            with connection:
+                connection.execute(
+                    """
+                    insert or replace into runs (
+                        run_id,
+                        workflow_id,
+                        status,
+                        inputs_json,
+                        outputs_json,
+                        workflow_source_path,
+                        workflow_snapshot,
+                        workflow_sha256,
+                        inputs_sha256,
+                        git_commit,
+                        environment_json
+                    )
+                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        run.run_id,
+                        run.workflow_id,
+                        run.status,
+                        json.dumps(run.inputs, ensure_ascii=False),
+                        json.dumps(run.outputs, ensure_ascii=False),
+                        workflow_source_path,
+                        provenance.workflow_snapshot if provenance is not None else None,
+                        provenance.workflow_sha256 if provenance is not None else None,
+                        provenance.inputs_sha256 if provenance is not None else None,
+                        provenance.git_commit if provenance is not None else None,
+                        json.dumps(provenance.environment, ensure_ascii=False)
+                        if provenance is not None
+                        else None,
+                    ),
                 )
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    run.run_id,
-                    run.workflow_id,
-                    run.status,
-                    json.dumps(run.inputs, ensure_ascii=False),
-                    json.dumps(run.outputs, ensure_ascii=False),
-                    workflow_source_path,
-                    provenance.workflow_snapshot if provenance is not None else None,
-                    provenance.workflow_sha256 if provenance is not None else None,
-                    provenance.inputs_sha256 if provenance is not None else None,
-                    provenance.git_commit if provenance is not None else None,
-                    json.dumps(provenance.environment, ensure_ascii=False)
-                    if provenance is not None
-                    else None,
-                ),
-            )
 
     def add_event(self, event: NodeEvent) -> None:
-        with self._connect() as connection:
-            connection.execute(
-                """
-                insert into node_events (run_id, node_id, status, input_json, output_json, metadata_json)
-                values (?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    event.run_id,
-                    event.node_id,
-                    event.status,
-                    json.dumps(event.input, ensure_ascii=False),
-                    json.dumps(event.output, ensure_ascii=False),
-                    json.dumps(event.metadata, ensure_ascii=False),
-                ),
-            )
-
-    def replace_events(self, run_id: str, events: list[NodeEvent]) -> None:
-        with self._connect() as connection:
-            connection.execute("delete from node_events where run_id = ?", (run_id,))
-            for event in events:
+        with closing(self._connect()) as connection:
+            with connection:
                 connection.execute(
                     """
                     insert into node_events (run_id, node_id, status, input_json, output_json, metadata_json)
@@ -208,8 +193,28 @@ class RunStore:
                     ),
                 )
 
+    def replace_events(self, run_id: str, events: list[NodeEvent]) -> None:
+        with closing(self._connect()) as connection:
+            with connection:
+                connection.execute("delete from node_events where run_id = ?", (run_id,))
+                for event in events:
+                    connection.execute(
+                        """
+                        insert into node_events (run_id, node_id, status, input_json, output_json, metadata_json)
+                        values (?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            event.run_id,
+                            event.node_id,
+                            event.status,
+                            json.dumps(event.input, ensure_ascii=False),
+                            json.dumps(event.output, ensure_ascii=False),
+                            json.dumps(event.metadata, ensure_ascii=False),
+                        ),
+                    )
+
     def count_node_executions(self, run_id: str) -> int:
-        with self._connect() as connection:
+        with closing(self._connect()) as connection:
             row = connection.execute(
                 """
                 select count(*) as count
@@ -226,47 +231,49 @@ class RunStore:
         node_id: str,
         max_node_executions: int,
     ) -> tuple[bool, int]:
-        with self._connect() as connection:
-            connection.execute("begin immediate")
-            row = connection.execute(
-                """
-                select count(*) as count
-                from node_execution_reservations
-                where run_id = ?
-                """,
-                (run_id,),
-            ).fetchone()
-            executions_used = int(row["count"]) if row is not None else 0
-            if executions_used >= max_node_executions:
-                return False, executions_used
-            connection.execute(
-                """
-                insert into node_execution_reservations (run_id, node_id)
-                values (?, ?)
-                """,
-                (run_id, node_id),
-            )
-            return True, executions_used + 1
+        with closing(self._connect()) as connection:
+            with connection:
+                connection.execute("begin immediate")
+                row = connection.execute(
+                    """
+                    select count(*) as count
+                    from node_execution_reservations
+                    where run_id = ?
+                    """,
+                    (run_id,),
+                ).fetchone()
+                executions_used = int(row["count"]) if row is not None else 0
+                if executions_used >= max_node_executions:
+                    return False, executions_used
+                connection.execute(
+                    """
+                    insert into node_execution_reservations (run_id, node_id)
+                    values (?, ?)
+                    """,
+                    (run_id, node_id),
+                )
+                return True, executions_used + 1
 
     def add_verification(self, run_id: str, status: str, checks: list[VerificationCheck]) -> StoredVerification:
-        with self._connect() as connection:
-            cursor = connection.execute(
-                """
-                insert into verifications (run_id, status, checks_json)
-                values (?, ?, ?)
-                """,
-                (
-                    run_id,
-                    status,
-                    json.dumps([check.__dict__ for check in checks], ensure_ascii=False),
-                ),
-            )
-            verification_id = int(cursor.lastrowid)
+        with closing(self._connect()) as connection:
+            with connection:
+                cursor = connection.execute(
+                    """
+                    insert into verifications (run_id, status, checks_json)
+                    values (?, ?, ?)
+                    """,
+                    (
+                        run_id,
+                        status,
+                        json.dumps([check.__dict__ for check in checks], ensure_ascii=False),
+                    ),
+                )
+                verification_id = int(cursor.lastrowid)
         return StoredVerification(id=verification_id, run_id=run_id, status=status, checks=checks)
 
     def table_row_counts(self, tables: list[str]) -> dict[str, int | None]:
         counts: dict[str, int | None] = {}
-        with self._connect() as connection:
+        with closing(self._connect()) as connection:
             existing_tables = {
                 row["name"]
                 for row in connection.execute(
@@ -287,7 +294,7 @@ class RunStore:
         if status is not None:
             where_clause = "where r.status = ?"
             params = (status,)
-        with self._connect() as connection:
+        with closing(self._connect()) as connection:
             rows = connection.execute(
                 f"""
                 select
@@ -346,7 +353,7 @@ class RunStore:
             }
         placeholders = ",".join("?" for _ in run_ids)
         params = tuple(run_ids)
-        with self._connect() as connection:
+        with closing(self._connect()) as connection:
             return {
                 "runs": _count_related_rows(connection, "runs", placeholders, params),
                 "node_events": _count_related_rows(connection, "node_events", placeholders, params),
@@ -365,27 +372,28 @@ class RunStore:
             return counts
         placeholders = ",".join("?" for _ in run_ids)
         params = tuple(run_ids)
-        with self._connect() as connection:
-            connection.execute(
-                f"delete from node_execution_reservations where run_id in ({placeholders})",
-                params,
-            )
-            connection.execute(
-                f"delete from verifications where run_id in ({placeholders})",
-                params,
-            )
-            connection.execute(
-                f"delete from node_events where run_id in ({placeholders})",
-                params,
-            )
-            connection.execute(
-                f"delete from runs where run_id in ({placeholders})",
-                params,
-            )
+        with closing(self._connect()) as connection:
+            with connection:
+                connection.execute(
+                    f"delete from node_execution_reservations where run_id in ({placeholders})",
+                    params,
+                )
+                connection.execute(
+                    f"delete from verifications where run_id in ({placeholders})",
+                    params,
+                )
+                connection.execute(
+                    f"delete from node_events where run_id in ({placeholders})",
+                    params,
+                )
+                connection.execute(
+                    f"delete from runs where run_id in ({placeholders})",
+                    params,
+                )
         return counts
 
     def get_run(self, run_id: str) -> StoredRun:
-        with self._connect() as connection:
+        with closing(self._connect()) as connection:
             run_row = connection.execute("select * from runs where run_id = ?", (run_id,)).fetchone()
             if run_row is None:
                 raise KeyError(f"run {run_id!r} not found")
