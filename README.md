@@ -90,7 +90,22 @@ uv run python scripts/verify_release_installability.py
 
 That verifier builds the package, installs the wheel into a clean temporary virtual environment, and runs installed CLI and SDK smoke checks from outside the repository source tree. The installed smoke covers `validate`, `run`, `report`, `verify`, `export-bundle`, `verify-bundle`, and SDK imports against packaged smoke examples included in the release artifact.
 
-This is a local release-candidate contract only. No PyPI publishing, package signing, hosted API/UI, scheduler, distributed execution, live provider call, or live remote MCP dependency is included in this phase.
+Generate and verify the local release trust manifest:
+
+```powershell
+uv run python scripts/verify_release_trust.py
+```
+
+You can also create and verify a manifest directly from local artifacts:
+
+```powershell
+uv run ai-infra release-manifest --artifact dist/<wheel>.whl --artifact dist/<sdist>.tar.gz --output dist/release-trust-manifest.json --verification "uv build=passed"
+uv run ai-infra verify-release dist/release-trust-manifest.json --artifact-dir dist
+```
+
+The release trust manifest records package name/version, wheel and source distribution SHA-256 values, artifact sizes, source commit, git tree state, build environment, verification command summary, and the current SBOM boundary. The verifier checks the manifest offline against local artifacts and proves representative failures for tampered artifacts, missing artifacts, package metadata mismatch, source commit mismatch, and unsupported SBOM boundary shapes.
+
+This is a local release-candidate contract only. No PyPI publishing, No package signing, No external trust root, hosted API/UI, scheduler, distributed execution, live provider call, or live remote MCP dependency is included in this phase.
 
 ## Representative Workflows
 
@@ -110,6 +125,7 @@ from pathlib import Path
 
 from ai_infra import (
     build_run_report,
+    build_release_trust_manifest,
     default_store,
     export_evidence_bundle,
     get_run,
@@ -118,6 +134,7 @@ from ai_infra import (
     validate_stored_run,
     validate_workflow,
     verify_evidence_bundle,
+    verify_release_trust_manifest,
 )
 
 workflow = load_workflow(Path("examples/hello_workflow.yaml"))
@@ -134,6 +151,22 @@ bundle_verification = verify_evidence_bundle(bundle.path)
 assert verification.status == "passed"
 assert bundle_verification.status == "passed"
 print(result.run_id, bundle.path)
+```
+
+Release trust APIs are intentionally separate from workflow execution:
+
+```python
+manifest = build_release_trust_manifest(
+    ["dist/ai_infra-0.1.0-py3-none-any.whl", "dist/ai_infra-0.1.0.tar.gz"],
+    source_commit="local-commit",
+    tree_state="clean",
+    verification_commands=[{"command": "uv build", "status": "passed"}],
+)
+release_verification = verify_release_trust_manifest(
+    "dist/release-trust-manifest.json",
+    artifact_dir="dist",
+)
+assert release_verification.status == "passed"
 ```
 
 ## Evidence Model

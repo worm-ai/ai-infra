@@ -11,6 +11,12 @@ from .maintenance import (
     plan_retention_cleanup,
 )
 from .react import ReActExecution, ReActModelConfig, ReActStepEvidence, execute_react_node
+from .release_trust import (
+    ReleaseTrustVerification,
+    build_release_trust_manifest,
+    verify_release_trust_manifest,
+    write_release_trust_manifest,
+)
 from .reporting import build_run_report, build_stored_run_report
 from .runtime import (
     RunResult,
@@ -47,6 +53,7 @@ __all__ = [
     "ReActModelConfig",
     "ReActStepEvidence",
     "RunResult",
+    "ReleaseTrustVerification",
     "SuperAgent",
     "ToolExecution",
     "ToolInvocation",
@@ -58,6 +65,7 @@ __all__ = [
     "__version__",
     "apply_retention_cleanup",
     "build_run_report",
+    "build_release_trust_manifest",
     "build_stored_run_report",
     "build_tool_invocation",
     "default_store",
@@ -78,4 +86,6 @@ __all__ = [
     "validate_stored_run",
     "validate_workflow",
     "verify_evidence_bundle",
+    "verify_release_trust_manifest",
+    "write_release_trust_manifest",
 ]

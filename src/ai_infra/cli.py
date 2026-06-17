@@ -16,6 +16,14 @@ from .maintenance import (
     list_run_summaries,
     plan_retention_cleanup,
 )
+from .release_trust import (
+    build_release_trust_manifest,
+    current_source_commit,
+    current_tree_state,
+    default_build_environment,
+    verify_release_trust_manifest,
+    write_release_trust_manifest,
+)
 from .reporting import build_run_report
 from .runtime import default_store, get_run, resume_workflow, run_workflow, validate_run, validate_stored_run
 
@@ -62,6 +70,18 @@ def main(argv: list[str] | None = None) -> int:
     verify_bundle_parser = subparsers.add_parser("verify-bundle")
     verify_bundle_parser.add_argument("bundle")
 
+    release_manifest_parser = subparsers.add_parser("release-manifest")
+    release_manifest_parser.add_argument("--artifact", action="append", required=True)
+    release_manifest_parser.add_argument("--output", required=True)
+    release_manifest_parser.add_argument("--source-commit")
+    release_manifest_parser.add_argument("--tree-state")
+    release_manifest_parser.add_argument("--verification", action="append", default=[])
+
+    verify_release_parser = subparsers.add_parser("verify-release")
+    verify_release_parser.add_argument("manifest")
+    verify_release_parser.add_argument("--artifact-dir")
+    verify_release_parser.add_argument("--expected-source-commit")
+
     subparsers.add_parser("store-health")
 
     runs_parser = subparsers.add_parser("runs")
@@ -79,6 +99,27 @@ def main(argv: list[str] | None = None) -> int:
         except ValueError as exc:
             _print({"ok": False, "error": str(exc)})
             return 2
+        _print({"ok": verification.status == "passed", "verification": asdict(verification)})
+        return 0 if verification.status == "passed" else 1
+
+    if args.command == "release-manifest":
+        manifest = build_release_trust_manifest(
+            [Path(path) for path in args.artifact],
+            source_commit=args.source_commit or current_source_commit(),
+            tree_state=args.tree_state or current_tree_state(),
+            build_environment=default_build_environment(),
+            verification_commands=_parse_release_verification_args(args.verification),
+        )
+        path = write_release_trust_manifest(manifest, args.output)
+        _print({"ok": True, "manifest": {"path": str(path), "package": manifest["package"]}})
+        return 0
+
+    if args.command == "verify-release":
+        verification = verify_release_trust_manifest(
+            args.manifest,
+            artifact_dir=args.artifact_dir,
+            expected_source_commit=args.expected_source_commit,
+        )
         _print({"ok": verification.status == "passed", "verification": asdict(verification)})
         return 0 if verification.status == "passed" else 1
 
@@ -168,6 +209,8 @@ def _contains_subcommand(argv: list[str]) -> bool:
             "export-bundle",
             "verify",
             "verify-bundle",
+            "release-manifest",
+            "verify-release",
             "store-health",
             "runs",
             "cleanup",
@@ -183,6 +226,17 @@ def _run_result_payload(result: Any) -> dict[str, Any]:
         "status": result.status,
         "outputs": result.outputs,
     }
+
+
+def _parse_release_verification_args(values: list[str]) -> list[dict[str, str]]:
+    commands: list[dict[str, str]] = []
+    for value in values:
+        if "=" in value:
+            command, status = value.rsplit("=", 1)
+        else:
+            command, status = value, "passed"
+        commands.append({"command": command, "status": status})
+    return commands
 
 
 def _stored_run_payload(run: Any, include_events: bool) -> dict[str, Any]:

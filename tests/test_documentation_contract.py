@@ -24,6 +24,21 @@ def test_release_installability_verifier_is_tracked():
     assert "resources.files('ai_infra').joinpath('examples')" in verifier_source
 
 
+def test_release_trust_verifier_is_tracked():
+    verifier = Path("scripts/verify_release_trust.py")
+    verifier_source = verifier.read_text(encoding="utf-8")
+
+    assert verifier.exists()
+    assert "def main()" in verifier_source
+    assert "build_release_trust_manifest" in verifier_source
+    assert "verify_release_trust_manifest" in verifier_source
+    assert "tampered_artifact" in verifier_source
+    assert "missing_artifact" in verifier_source
+    assert "package_metadata_mismatch" in verifier_source
+    assert "source_commit_mismatch" in verifier_source
+    assert "unsupported_sbom_boundary" in verifier_source
+
+
 def test_readme_documents_production_dag_delivery_contract():
     readme = Path("README.md").read_text(encoding="utf-8")
 
@@ -36,9 +51,18 @@ def test_readme_documents_production_dag_delivery_contract():
         "uv run ai-infra validate examples/hello_workflow.yaml",
         "uv build",
         "uv run python scripts/verify_release_installability.py",
+        "uv run python scripts/verify_release_trust.py",
+        "uv run ai-infra release-manifest",
+        "uv run ai-infra verify-release",
         "ai-infra --version",
         "clean temporary virtual environment",
         "packaged smoke examples",
+        "release trust manifest",
+        "wheel and source distribution SHA-256",
+        "source commit",
+        "SBOM boundary",
+        "No package signing",
+        "No external trust root",
         "No PyPI publishing",
         "uv run ai-infra run examples/hello_workflow.yaml --input-file examples/hello_input.json",
         "uv run ai-infra status",
@@ -52,8 +76,10 @@ def test_readme_documents_production_dag_delivery_contract():
         "load_workflow",
         "run_workflow",
         "build_run_report",
+        "build_release_trust_manifest",
         "export_evidence_bundle",
         "verify_evidence_bundle",
+        "verify_release_trust_manifest",
         "No API/UI",
         "No PlanExec runtime",
         "No Super-Agent runtime",
