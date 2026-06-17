@@ -48,6 +48,7 @@ DEPRECATED_WORKFLOW_FEATURES = {
 SUPPORTED_NODE_TYPES = {"template", "react", "tool", "llm", "validation"}
 SUPPORTED_TOOL_ADAPTERS = {"python", "shell", "http", "mcp"}
 SUPPORTED_REACT_PROVIDERS = {"mock", "openai-compatible"}
+SUPPORTED_REACT_PROVIDER_RUNTIME_MODES = {"dry_run", "fake", "live"}
 SUPPORTED_HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
 SUPPORTED_CONTRACT_TYPES = {"object", "array", "string", "integer", "number", "boolean", "null"}
 SUPPORTED_CONTRACT_STATUSES = {"passed", "failed"}
@@ -462,6 +463,7 @@ def _validate_react_node(node: WorkflowNode) -> None:
             "base_url",
             "api_key_env",
             "timeout_ms",
+            "provider_runtime",
         },
         f"react node {node.id!r} config",
     )
@@ -496,6 +498,7 @@ def _validate_react_node(node: WorkflowNode) -> None:
             )
         if "timeout_ms" not in react_config:
             raise WorkflowValidationError(f"react node {node.id!r} openai-compatible provider requires timeout_ms")
+        _validate_react_provider_runtime(node, react_config.get("provider_runtime"), str(react_config["base_url"]))
     _validate_positive_int(react_config, "timeout_ms", f"react node {node.id!r} timeout_ms")
 
     budget = react_config.get("budget")
@@ -559,6 +562,31 @@ def _validate_react_node(node: WorkflowNode) -> None:
         if not isinstance(tool_config, dict):
             raise WorkflowValidationError(f"react node {node.id!r} tool[{index}] must be a mapping")
         _validate_react_tool_config(node, index, tool_config)
+
+
+def _validate_react_provider_runtime(node: WorkflowNode, runtime: Any, base_url: str) -> None:
+    if runtime is None:
+        return
+    context = f"react node {node.id!r} provider_runtime"
+    if not isinstance(runtime, dict):
+        raise WorkflowValidationError(f"{context} must be a mapping")
+    _reject_unknown_fields(runtime, {"mode", "allow_live_http", "reason"}, context)
+    mode = runtime.get("mode")
+    if not _is_non_empty_string(mode):
+        raise WorkflowValidationError(f"{context} requires mode")
+    if mode not in SUPPORTED_REACT_PROVIDER_RUNTIME_MODES:
+        allowed = ", ".join(sorted(SUPPORTED_REACT_PROVIDER_RUNTIME_MODES))
+        raise WorkflowValidationError(f"{context} mode must be one of {allowed}")
+    if "allow_live_http" in runtime and not isinstance(runtime["allow_live_http"], bool):
+        raise WorkflowValidationError(f"{context} allow_live_http must be a boolean")
+    if "reason" in runtime and not _is_non_empty_string(runtime.get("reason")):
+        raise WorkflowValidationError(f"{context} reason must be a non-empty string")
+    if runtime.get("allow_live_http") is True and mode != "live":
+        raise WorkflowValidationError(f"{context} allow_live_http is only supported with mode live")
+    if mode == "fake" and not base_url.startswith("memory://"):
+        raise WorkflowValidationError(f"{context} mode fake requires a memory:// base_url")
+    if mode == "live" and not base_url.startswith(("http://", "https://")):
+        raise WorkflowValidationError(f"{context} mode live requires an http:// or https:// base_url")
 
 
 def _validate_react_tool_config(node: WorkflowNode, index: int, tool_config: dict[str, Any]) -> None:

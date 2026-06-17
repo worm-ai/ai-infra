@@ -15,6 +15,9 @@ nodes:
       base_url: memory://fake-openai
       api_key_env: AI_INFRA_FAKE_OPENAI_API_KEY
       timeout_ms: 1000
+      provider_runtime:
+        mode: fake
+        reason: local deterministic provider fixture
       prompt: "Echo {secret}"
       max_steps: 1
       budget:
@@ -41,6 +44,10 @@ validations:
     source: report
     path: timeline.0.react.provider.request.endpoint
     equals: /chat/completions
+  - type: assertion
+    source: report
+    path: timeline.0.react.provider.governance.runtime.mode
+    equals: fake
   - type: assertion
     source: report
     path: summary.redaction.redacted_nodes

@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+import ai_infra.react as react_module
 from ai_infra import (
     build_run_report,
     export_evidence_bundle,
@@ -45,6 +46,9 @@ nodes:
       base_url: memory://fake-openai
       api_key_env: AI_INFRA_FAKE_OPENAI_API_KEY
       timeout_ms: 1000
+      provider_runtime:
+        mode: fake
+        reason: local deterministic provider fixture
       prompt: "Answer {question}"
       max_steps: 1
       budget:
@@ -63,6 +67,10 @@ nodes:
     assert config["base_url"] == "memory://fake-openai"
     assert config["api_key_env"] == "AI_INFRA_FAKE_OPENAI_API_KEY"
     assert config["timeout_ms"] == 1000
+    assert config["provider_runtime"] == {
+        "mode": "fake",
+        "reason": "local deterministic provider fixture",
+    }
 
 
 @pytest.mark.parametrize(
@@ -116,6 +124,89 @@ nodes:
         prompt_cost_per_1k_tokens: 0.001
 """,
             "react node 'answer' openai-compatible provider budget requires completion_cost_per_1k_tokens",
+        ),
+        (
+            """
+      timeout_ms: 1000
+      provider_runtime:
+        mode: remote
+      budget:
+        max_total_tokens: 100
+        max_cost_usd: 0.01
+        prompt_cost_per_1k_tokens: 0.001
+        completion_cost_per_1k_tokens: 0.002
+""",
+            "react node 'answer' provider_runtime mode must be one of dry_run, fake, live",
+        ),
+        (
+            """
+      timeout_ms: 1000
+      provider_runtime:
+        mode: live
+        allow_live_http: "yes"
+      budget:
+        max_total_tokens: 100
+        max_cost_usd: 0.01
+        prompt_cost_per_1k_tokens: 0.001
+        completion_cost_per_1k_tokens: 0.002
+""",
+            "react node 'answer' provider_runtime allow_live_http must be a boolean",
+        ),
+        (
+            """
+      timeout_ms: 1000
+      provider_runtime:
+        mode: live
+        reason: ""
+      budget:
+        max_total_tokens: 100
+        max_cost_usd: 0.01
+        prompt_cost_per_1k_tokens: 0.001
+        completion_cost_per_1k_tokens: 0.002
+""",
+            "react node 'answer' provider_runtime reason must be a non-empty string",
+        ),
+        (
+            """
+      base_url: http://127.0.0.1:9
+      timeout_ms: 1000
+      provider_runtime:
+        mode: fake
+      budget:
+        max_total_tokens: 100
+        max_cost_usd: 0.01
+        prompt_cost_per_1k_tokens: 0.001
+        completion_cost_per_1k_tokens: 0.002
+""",
+            "react node 'answer' provider_runtime mode fake requires a memory:// base_url",
+        ),
+        (
+            """
+      timeout_ms: 1000
+      provider_runtime:
+        mode: live
+        allow_live_http: true
+      budget:
+        max_total_tokens: 100
+        max_cost_usd: 0.01
+        prompt_cost_per_1k_tokens: 0.001
+        completion_cost_per_1k_tokens: 0.002
+""",
+            "react node 'answer' provider_runtime mode live requires an http:// or https:// base_url",
+        ),
+        (
+            """
+      timeout_ms: 1000
+      provider_runtime:
+        mode: dry_run
+        allow_live_http: true
+      budget:
+        max_total_tokens: 100
+        max_cost_usd: 0.01
+        prompt_cost_per_1k_tokens: 0.001
+        completion_cost_per_1k_tokens: 0.002
+""",
+            "react node 'answer' provider_runtime allow_live_http is only supported with mode live",
         ),
     ],
 )
@@ -289,6 +380,13 @@ validations:
         "api_key_env": "AI_INFRA_MISSING_OPENAI_KEY",
         "api_key_present": False,
         "timeout_ms": 1000,
+        "runtime": {
+            "mode": "fake",
+            "allow_live_http": False,
+            "decision": "allowed",
+            "reason": "local provider runtime mode",
+            "network_attempted": False,
+        },
     }
     assert validate_stored_run(result.run_id, store=store).status == "passed"
 
@@ -431,6 +529,207 @@ validations:
     assert validate_stored_run(result.run_id, store=store).status == "passed"
 
 
+def test_openai_compatible_live_http_is_denied_by_default_without_network(tmp_path, monkeypatch):
+    monkeypatch.setenv("AI_INFRA_FAKE_OPENAI_API_KEY", "test-key")
+
+    def fail_if_network_is_attempted(*_args, **_kwargs):
+        raise AssertionError("live HTTP provider call should be blocked before network access")
+
+    monkeypatch.setattr(react_module.urllib.request, "urlopen", fail_if_network_is_attempted)
+    workflow_path = write_workflow(
+        tmp_path,
+        """
+id: react-openai-live-disabled
+entrypoint: answer
+nodes:
+  answer:
+    type: react
+    config:
+      provider: openai-compatible
+      model: fake-chat
+      base_url: http://127.0.0.1:9
+      api_key_env: AI_INFRA_FAKE_OPENAI_API_KEY
+      timeout_ms: 1000
+      prompt: "Answer {question}"
+      max_steps: 1
+      budget:
+        max_total_tokens: 100
+        max_cost_usd: 0.01
+        prompt_cost_per_1k_tokens: 0.001
+        completion_cost_per_1k_tokens: 0.002
+validations:
+  - type: run_status
+    equals: failed
+  - type: node_failed
+    node: answer
+  - type: assertion
+    source: node_output
+    node: answer
+    path: react.provider.status
+    equals: live_http_disabled
+  - type: assertion
+    source: report
+    path: timeline.0.react.provider.governance.runtime.network_attempted
+    equals: false
+""",
+    )
+    store = RunStore(tmp_path / "runs.sqlite")
+    workflow = load_workflow(workflow_path)
+
+    result = run_workflow(workflow, {"question": "ABH"}, store=store)
+    report = build_run_report(result.run_id, store=store)
+
+    assert result.status == "failed"
+    output = result.outputs["answer"]
+    assert output["error"] == "react openai-compatible provider live HTTP calls are disabled"
+    assert output["react"]["provider"]["status"] == "live_http_disabled"
+    assert output["react"]["provider"]["governance"]["runtime"] == {
+        "mode": "live",
+        "allow_live_http": False,
+        "decision": "denied",
+        "reason": "live HTTP provider calls require provider_runtime.allow_live_http=true",
+        "network_attempted": False,
+    }
+    assert report["timeline"][0]["react"]["provider"]["request"]["endpoint"] == "/chat/completions"
+    assert validate_stored_run(result.run_id, store=store).status == "passed"
+
+
+def test_openai_compatible_dry_run_records_evidence_without_key_or_network(tmp_path, monkeypatch):
+    monkeypatch.delenv("AI_INFRA_FAKE_OPENAI_API_KEY", raising=False)
+
+    def fail_if_network_is_attempted(*_args, **_kwargs):
+        raise AssertionError("dry-run provider mode must not perform network access")
+
+    monkeypatch.setattr(react_module.urllib.request, "urlopen", fail_if_network_is_attempted)
+    workflow_path = write_workflow(
+        tmp_path,
+        """
+id: react-openai-dry-run
+entrypoint: answer
+nodes:
+  answer:
+    type: react
+    config:
+      provider: openai-compatible
+      model: fake-chat
+      base_url: http://127.0.0.1:9
+      api_key_env: AI_INFRA_FAKE_OPENAI_API_KEY
+      timeout_ms: 1000
+      provider_runtime:
+        mode: dry_run
+        reason: local audit rehearsal
+      prompt: "Answer {question}"
+      max_steps: 1
+      budget:
+        max_total_tokens: 100
+        max_cost_usd: 0.01
+        prompt_cost_per_1k_tokens: 0.001
+        completion_cost_per_1k_tokens: 0.002
+validations:
+  - type: run_status
+    equals: completed
+  - type: node_completed
+    node: answer
+  - type: assertion
+    source: node_output
+    node: answer
+    path: react.provider.status
+    equals: dry_run
+  - type: assertion
+    source: report
+    path: timeline.0.react.provider.governance.runtime.mode
+    equals: dry_run
+""",
+    )
+    store = RunStore(tmp_path / "runs.sqlite")
+    workflow = load_workflow(workflow_path)
+
+    result = run_workflow(workflow, {"question": "ABH"}, store=store)
+    report = build_run_report(result.run_id, store=store)
+    run = get_run(result.run_id, store=store)
+    bundle = export_evidence_bundle(run, report, tmp_path / "bundles")
+
+    assert result.status == "completed"
+    output = result.outputs["answer"]
+    assert output["answer"] == "[DRY_RUN]"
+    assert output["react"]["provider"]["status"] == "dry_run"
+    assert output["react"]["provider"]["governance"]["api_key_present"] is False
+    assert output["react"]["provider"]["governance"]["runtime"] == {
+        "mode": "dry_run",
+        "allow_live_http": False,
+        "decision": "dry_run",
+        "reason": "local audit rehearsal",
+        "network_attempted": False,
+    }
+    assert output["react"]["provider"]["usage"]["source"] == "estimated"
+    assert report["timeline"][0]["react"]["provider"]["response"]["content_sha256"]
+    with zipfile.ZipFile(bundle.path) as archive:
+        events_json = archive.read("events.json").decode("utf-8")
+        assert "Answer ABH" not in events_json
+        assert "prompt_sha256" in events_json
+    assert validate_stored_run(result.run_id, store=store).status == "passed"
+
+
+def test_openai_compatible_dry_run_still_enforces_token_budget_without_network(tmp_path, monkeypatch):
+    monkeypatch.delenv("AI_INFRA_FAKE_OPENAI_API_KEY", raising=False)
+
+    def fail_if_network_is_attempted(*_args, **_kwargs):
+        raise AssertionError("dry-run budget enforcement must not perform network access")
+
+    monkeypatch.setattr(react_module.urllib.request, "urlopen", fail_if_network_is_attempted)
+    workflow_path = write_workflow(
+        tmp_path,
+        """
+id: react-openai-dry-run-budget
+entrypoint: answer
+nodes:
+  answer:
+    type: react
+    config:
+      provider: openai-compatible
+      model: fake-chat
+      base_url: http://127.0.0.1:9
+      api_key_env: AI_INFRA_FAKE_OPENAI_API_KEY
+      timeout_ms: 1000
+      provider_runtime:
+        mode: dry_run
+      prompt: "Answer the production governance question {question}"
+      max_steps: 1
+      budget:
+        max_total_tokens: 1
+        max_cost_usd: 1
+        prompt_cost_per_1k_tokens: 0.001
+        completion_cost_per_1k_tokens: 0.002
+validations:
+  - type: run_status
+    equals: failed
+  - type: node_failed
+    node: answer
+  - type: assertion
+    source: node_output
+    node: answer
+    path: react.provider.status
+    equals: token_budget_exhausted
+  - type: assertion
+    source: report
+    path: timeline.0.react.provider.governance.runtime.network_attempted
+    equals: false
+""",
+    )
+    store = RunStore(tmp_path / "runs.sqlite")
+    workflow = load_workflow(workflow_path)
+
+    result = run_workflow(workflow, {"question": "ABH"}, store=store)
+
+    assert result.status == "failed"
+    output = result.outputs["answer"]
+    assert output["error"] == "react openai-compatible provider exceeded token budget"
+    assert output["react"]["provider"]["status"] == "token_budget_exhausted"
+    assert output["react"]["provider"]["governance"]["runtime"]["decision"] == "dry_run"
+    assert output["react"]["provider"]["governance"]["runtime"]["network_attempted"] is False
+    assert validate_stored_run(result.run_id, store=store).status == "passed"
+
+
 def test_openai_compatible_http_response_usage_drives_budget(tmp_path, monkeypatch):
     monkeypatch.setenv("AI_INFRA_FAKE_OPENAI_API_KEY", "test-key")
 
@@ -467,6 +766,10 @@ nodes:
       base_url: http://127.0.0.1:{server.server_port}
       api_key_env: AI_INFRA_FAKE_OPENAI_API_KEY
       timeout_ms: 1000
+      provider_runtime:
+        mode: live
+        allow_live_http: true
+        reason: local test server
       prompt: "Answer {{question}}"
       max_steps: 1
       budget:
@@ -544,6 +847,10 @@ nodes:
       base_url: http://127.0.0.1:{server.server_port}
       api_key_env: AI_INFRA_FAKE_OPENAI_API_KEY
       timeout_ms: 1000
+      provider_runtime:
+        mode: live
+        allow_live_http: true
+        reason: local test server
       prompt: "Answer {{question}}"
       max_steps: 1
       budget:

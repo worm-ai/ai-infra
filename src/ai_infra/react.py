@@ -249,11 +249,69 @@ def _execute_openai_compatible_node(
     max_tool_calls: int,
 ) -> ReActExecution:
     prompt = _render_template(model_config.prompt, context)
+    runtime = _provider_runtime_governance(config, model_config)
     provider_governance = {
         "api_key_env": model_config.api_key_env,
         "api_key_present": bool(model_config.api_key_env and os.environ.get(model_config.api_key_env)),
         "timeout_ms": model_config.timeout_ms,
+        "runtime": runtime,
     }
+
+    if runtime["decision"] == "dry_run":
+        response = {
+            "status": "dry_run",
+            "content": "[DRY_RUN]",
+            "finish_reason": "dry_run",
+        }
+        usage = _provider_usage(prompt, response, config.get("budget"))
+        provider = {
+            "status": "dry_run",
+            "governance": provider_governance,
+            "request": _provider_request_summary(model_config, prompt),
+            "response": _provider_response_summary(response),
+            "usage": usage,
+        }
+        budget_status, budget_error = _provider_budget_status(usage, config.get("budget"))
+        if budget_error is not None:
+            provider["status"] = budget_status
+            return _provider_failure_execution(
+                model_summary=model_summary,
+                model_config=model_config,
+                max_tool_calls=max_tool_calls,
+                started=started,
+                budget_status=budget_status,
+                error=budget_error,
+                provider=provider,
+            )
+        return _provider_completed_execution(
+            model_summary=model_summary,
+            model_config=model_config,
+            max_tool_calls=max_tool_calls,
+            started=started,
+            budget_status=budget_status,
+            answer="[DRY_RUN]",
+            provider=provider,
+        )
+
+    if runtime["decision"] == "denied":
+        provider = {
+            "status": "live_http_disabled",
+            "governance": provider_governance,
+            "request": _provider_request_summary(model_config, prompt),
+        }
+        return _execution(
+            status="failed",
+            model=model_summary,
+            steps=[],
+            max_steps=model_config.max_steps,
+            max_tool_calls=max_tool_calls,
+            tool_calls_used=0,
+            budget_status="live_http_disabled",
+            started=started,
+            error="react openai-compatible provider live HTTP calls are disabled",
+            provider=provider,
+        )
+
     if not provider_governance["api_key_present"]:
         provider = {
             "status": "missing_api_key",
@@ -273,6 +331,8 @@ def _execute_openai_compatible_node(
             provider=provider,
         )
 
+    if (model_config.base_url or "").startswith(("http://", "https://")):
+        runtime["network_attempted"] = True
     response = _call_openai_compatible_provider(model_config, prompt)
     usage = _provider_usage(prompt, response, config.get("budget"))
     provider = {
@@ -318,6 +378,27 @@ def _execute_openai_compatible_node(
         )
 
     answer = response["content"]
+    return _provider_completed_execution(
+        model_summary=model_summary,
+        model_config=model_config,
+        max_tool_calls=max_tool_calls,
+        started=started,
+        budget_status=budget_status,
+        answer=answer,
+        provider=provider,
+    )
+
+
+def _provider_completed_execution(
+    *,
+    model_summary: dict[str, Any],
+    model_config: ReActModelConfig,
+    max_tool_calls: int,
+    started: float,
+    budget_status: str,
+    answer: str,
+    provider: dict[str, Any],
+) -> ReActExecution:
     steps = [
         ReActStepEvidence(
             index=1,
@@ -362,6 +443,40 @@ def _provider_failure_execution(
         error=error,
         provider=provider,
     )
+
+
+def _provider_runtime_governance(config: dict[str, Any], model_config: ReActModelConfig) -> dict[str, Any]:
+    runtime_config = config.get("provider_runtime")
+    runtime = runtime_config if isinstance(runtime_config, dict) else {}
+    base_url = model_config.base_url or ""
+    mode = str(runtime.get("mode") or ("live" if base_url.startswith(("http://", "https://")) else "fake"))
+    allow_live_http = bool(runtime.get("allow_live_http")) if isinstance(runtime.get("allow_live_http"), bool) else False
+    configured_reason = runtime.get("reason")
+    reason = str(configured_reason) if isinstance(configured_reason, str) and configured_reason.strip() else ""
+
+    if mode == "dry_run":
+        return {
+            "mode": "dry_run",
+            "allow_live_http": False,
+            "decision": "dry_run",
+            "reason": reason or "dry-run provider runtime mode",
+            "network_attempted": False,
+        }
+    if base_url.startswith(("http://", "https://")) and not allow_live_http:
+        return {
+            "mode": "live",
+            "allow_live_http": False,
+            "decision": "denied",
+            "reason": "live HTTP provider calls require provider_runtime.allow_live_http=true",
+            "network_attempted": False,
+        }
+    return {
+        "mode": mode,
+        "allow_live_http": allow_live_http,
+        "decision": "allowed",
+        "reason": reason or "local provider runtime mode" if mode == "fake" else reason or "live provider explicitly allowed",
+        "network_attempted": False,
+    }
 
 
 def _call_openai_compatible_provider(model_config: ReActModelConfig, prompt: str) -> dict[str, Any]:
