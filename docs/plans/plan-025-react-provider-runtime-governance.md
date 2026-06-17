@@ -8,7 +8,7 @@
 - Baseline: Plans 001-024 are closed with a local-first production DAG Workflow kernel, bounded ReAct atomic nodes, an OpenAI-compatible provider boundary, MCP-reserved/runtime tool boundaries, SQLite evidence, reports, verification, evidence bundles, release trust, run-store reliability, and workflow compatibility evidence. Plan-016 made optional OpenAI-compatible calls possible inside DAG react nodes, but runtime policy for live HTTP provider usage is still implicit: operators cannot deterministically require fake/offline-only provider execution, explicitly allow live HTTP calls, or capture provider-mode governance evidence across run/report/verify/bundle surfaces.
 - Owner: engineering
 - Created: 2026-06-17T20:47:10.901113+00:00
-- Updated: 2026-06-17T21:40:39.628109+00:00
+- Updated: 2026-06-17T21:47:50.157067+00:00
 
 ## Goals
 
@@ -80,6 +80,7 @@
 - ver-e87f5e2dd58a
 - ver-ebd50ab2d08a
 - ver-a027f64a12f1
+- ver-103bac565dca
 
 ## Audits
 
