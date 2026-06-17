@@ -68,6 +68,30 @@ uv run python scripts/verify_cli_production_demo.py
 
 That verifier uses temporary local state and does not require external credentials.
 
+## Local Release Packaging
+
+Build local release candidate artifacts:
+
+```powershell
+uv build
+```
+
+The build produces a wheel and source distribution for the local DAG Workflow kernel. The package exposes an identifiable version surface through the CLI and SDK:
+
+```powershell
+ai-infra --version
+```
+
+Run the release installability preflight:
+
+```powershell
+uv run python scripts/verify_release_installability.py
+```
+
+That verifier builds the package, installs the wheel into a clean temporary virtual environment, and runs installed CLI and SDK smoke checks from outside the repository source tree. The installed smoke covers `validate`, `run`, `report`, `verify`, `export-bundle`, `verify-bundle`, and SDK imports against packaged smoke examples included in the release artifact.
+
+This is a local release-candidate contract only. No PyPI publishing, package signing, hosted API/UI, scheduler, distributed execution, live provider call, or live remote MCP dependency is included in this phase.
+
 ## Representative Workflows
 
 - `examples/hello_workflow.yaml`: minimal DAG success path.

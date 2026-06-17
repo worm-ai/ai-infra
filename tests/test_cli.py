@@ -1,8 +1,11 @@
 import json
 import subprocess
 import sys
+from importlib.metadata import version
 from pathlib import Path
 import zipfile
+
+import ai_infra
 
 
 def run_cli(*args, state_dir):
@@ -12,6 +15,22 @@ def run_cli(*args, state_dir):
         capture_output=True,
         check=False,
     )
+
+
+def test_cli_version_matches_sdk_and_package_metadata(tmp_path):
+    result = run_cli("--version", state_dir=tmp_path)
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload == {
+        "ok": True,
+        "package": "ai-infra",
+        "version": version("ai-infra"),
+    }
+    assert ai_infra.__version__ == version("ai-infra")
+    assert "default_store" in ai_infra.__all__
+    assert callable(ai_infra.default_store)
+    assert result.stderr == ""
 
 
 def test_cli_validate_run_status_logs_and_verify(tmp_path):

@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 from .artifacts import export_evidence_bundle, verify_evidence_bundle
 from .config import WorkflowValidationError, load_workflow, validate_workflow
+from . import __version__
 from .maintenance import (
     apply_retention_cleanup,
     inspect_state_dir,
@@ -19,8 +21,14 @@ from .runtime import default_store, get_run, resume_workflow, run_workflow, vali
 
 
 def main(argv: list[str] | None = None) -> int:
+    raw_args = list(sys.argv[1:] if argv is None else argv)
+    if "--version" in raw_args and not _contains_subcommand(raw_args):
+        _print(_version_payload())
+        return 0
+
     parser = argparse.ArgumentParser(prog="ai-infra")
     parser.add_argument("--state-dir", default=".ai-infra")
+    parser.add_argument("--version", action="store_true")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     validate_parser = subparsers.add_parser("validate")
@@ -141,6 +149,31 @@ def main(argv: list[str] | None = None) -> int:
 
 def _print(payload: dict[str, Any]) -> None:
     print(json.dumps(payload, ensure_ascii=False))
+
+
+def _version_payload() -> dict[str, Any]:
+    return {"ok": True, "package": "ai-infra", "version": __version__}
+
+
+def _contains_subcommand(argv: list[str]) -> bool:
+    return any(
+        token
+        in {
+            "validate",
+            "run",
+            "resume",
+            "status",
+            "logs",
+            "report",
+            "export-bundle",
+            "verify",
+            "verify-bundle",
+            "store-health",
+            "runs",
+            "cleanup",
+        }
+        for token in argv
+    )
 
 
 def _run_result_payload(result: Any) -> dict[str, Any]:

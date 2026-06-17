@@ -1,3 +1,5 @@
+from importlib.metadata import PackageNotFoundError, version
+
 from .artifacts import EvidenceBundle, EvidenceBundleVerification, export_evidence_bundle, verify_evidence_bundle
 from .config import Workflow, WorkflowValidationError, load_workflow, load_workflow_from_source, validate_workflow
 from .layers import DagWorkflow, PlanExecAgent, ReActAgent, SuperAgent
@@ -13,6 +15,7 @@ from .reporting import build_run_report, build_stored_run_report
 from .runtime import (
     RunResult,
     VerificationResult,
+    default_store,
     get_run,
     resume_workflow,
     run_workflow,
@@ -28,6 +31,11 @@ from .tools import (
     default_tool_registry,
     execute_tool,
 )
+
+try:
+    __version__ = version("ai-infra")
+except PackageNotFoundError:
+    __version__ = "0.0.0+unknown"
 
 __all__ = [
     "DagWorkflow",
@@ -47,10 +55,12 @@ __all__ = [
     "VerificationResult",
     "Workflow",
     "WorkflowValidationError",
+    "__version__",
     "apply_retention_cleanup",
     "build_run_report",
     "build_stored_run_report",
     "build_tool_invocation",
+    "default_store",
     "default_tool_registry",
     "execute_tool",
     "execute_react_node",
