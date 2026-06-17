@@ -274,6 +274,66 @@ validations:
     assert verification.status == "passed"
 
 
+def test_react_node_can_call_local_mcp_tool_as_atomic_node_tool(tmp_path):
+    workflow_path = write_workflow(
+        tmp_path,
+        """
+id: react-mcp-runtime
+entrypoint: answer
+nodes:
+  answer:
+    type: react
+    config:
+      provider: mock
+      model: mock-react
+      prompt: "Use declared MCP tool for {question}"
+      max_steps: 2
+      budget:
+        max_tool_calls: 1
+      tools:
+        - adapter: mcp
+          runtime: local
+          server: local-memory
+          tool: echo
+          timeout_seconds: 3
+          args:
+            question: "{question}"
+validations:
+  - type: run_status
+    equals: completed
+  - type: node_completed
+    node: answer
+  - type: assertion
+    source: tool_invocation
+    node: answer
+    path: adapter
+    equals: mcp
+  - type: assertion
+    source: node_output
+    node: answer
+    path: react.steps.0.tool_invocation.output.mcp.status
+    equals: completed
+""",
+    )
+    store = RunStore(tmp_path / "runs.sqlite")
+    workflow = load_workflow(workflow_path)
+
+    result = run_workflow(workflow, {"question": "ABH"}, store=store)
+
+    assert result.status == "completed"
+    output = result.outputs["answer"]
+    assert output["answer"] == {"question": "ABH"}
+    assert output["tool_invocation"]["adapter"] == "mcp"
+    assert output["tool_invocation"]["reserved"] is False
+    assert output["react"]["steps"][0]["action"] == {
+        "type": "tool",
+        "adapter": "mcp",
+        "identity": "local-memory.echo",
+    }
+    assert output["react"]["steps"][0]["tool_invocation"]["output"]["mcp"]["status"] == "completed"
+    assert validate_stored_run(result.run_id, store=store).status == "passed"
+
+
 def test_react_node_max_steps_failure_is_actionable_and_auditable(tmp_path):
     workflow_path = write_workflow(
         tmp_path,

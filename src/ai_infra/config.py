@@ -291,13 +291,7 @@ def _validate_tool_node(node: WorkflowNode) -> None:
         return
 
     if adapter == "mcp":
-        _reject_unknown_fields(tool_config, {"adapter", "server", "tool", "args"}, f"mcp tool node {node.id!r}")
-        if not _is_non_empty_string(tool_config.get("server")):
-            raise WorkflowValidationError(f"mcp tool node {node.id!r} requires server")
-        if not _is_non_empty_string(tool_config.get("tool")):
-            raise WorkflowValidationError(f"mcp tool node {node.id!r} requires tool")
-        if "args" in tool_config and not isinstance(tool_config["args"], dict):
-            raise WorkflowValidationError(f"mcp tool node {node.id!r} args must be a mapping")
+        _validate_mcp_tool_config(tool_config, f"mcp tool node {node.id!r}")
         return
 
     _reject_unknown_fields(tool_config, {"adapter", "method", "url", "json", "timeout_seconds"}, f"http tool node {node.id!r}")
@@ -310,6 +304,20 @@ def _validate_tool_node(node: WorkflowNode) -> None:
     if method not in SUPPORTED_HTTP_METHODS:
         raise WorkflowValidationError(f"http tool node {node.id!r} has unsupported method {method!r}")
     _validate_timeout(tool_config, f"http tool node {node.id!r}")
+
+
+def _validate_mcp_tool_config(tool_config: dict[str, Any], context: str) -> None:
+    _reject_unknown_fields(tool_config, {"adapter", "runtime", "server", "tool", "args", "timeout_seconds"}, context)
+    runtime = tool_config.get("runtime")
+    if runtime is not None and runtime != "local":
+        raise WorkflowValidationError(f"{context} runtime must be 'local'")
+    if not _is_non_empty_string(tool_config.get("server")):
+        raise WorkflowValidationError(f"{context} requires server")
+    if not _is_non_empty_string(tool_config.get("tool")):
+        raise WorkflowValidationError(f"{context} requires tool")
+    if "args" in tool_config and not isinstance(tool_config["args"], dict):
+        raise WorkflowValidationError(f"{context} args must be a mapping")
+    _validate_timeout(tool_config, context)
 
 
 def _validate_react_node(node: WorkflowNode) -> None:
@@ -451,13 +459,7 @@ def _validate_react_tool_config(node: WorkflowNode, index: int, tool_config: dic
         return
 
     if adapter == "mcp":
-        _reject_unknown_fields(tool_config, {"adapter", "server", "tool", "args"}, f"mcp {context}")
-        if not _is_non_empty_string(tool_config.get("server")):
-            raise WorkflowValidationError(f"mcp {context} requires server")
-        if not _is_non_empty_string(tool_config.get("tool")):
-            raise WorkflowValidationError(f"mcp {context} requires tool")
-        if "args" in tool_config and not isinstance(tool_config["args"], dict):
-            raise WorkflowValidationError(f"mcp {context} args must be a mapping")
+        _validate_mcp_tool_config(tool_config, f"mcp {context}")
         return
 
     _reject_unknown_fields(tool_config, {"adapter", "method", "url", "json", "timeout_seconds"}, f"http {context}")
@@ -594,7 +596,7 @@ def _validate_timeout(config: dict[str, Any], context: str) -> None:
     if "timeout_seconds" not in config:
         return
     timeout = config["timeout_seconds"]
-    if not isinstance(timeout, int) or timeout <= 0:
+    if not isinstance(timeout, int) or isinstance(timeout, bool) or timeout <= 0:
         raise WorkflowValidationError(f"{context} timeout_seconds must be a positive integer")
 
 

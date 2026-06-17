@@ -180,6 +180,7 @@ def _tool_report(output: Any) -> dict[str, Any] | None:
             "exit_code",
             "stdout",
             "stderr",
+            "mcp",
         ]:
             if key in output and key not in report:
                 report[key] = output[key]

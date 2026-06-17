@@ -119,6 +119,48 @@ def test_cli_mcp_reserved_tool_boundary_report_and_verify(tmp_path):
     assert json.loads(verify.stdout)["verification"]["status"] == "passed"
 
 
+def test_cli_mcp_runtime_report_verify_and_export_bundle(tmp_path):
+    validate = run_cli("validate", "examples/mcp_runtime_workflow.yaml", state_dir=tmp_path)
+    assert validate.returncode == 0
+
+    run = run_cli(
+        "run",
+        "examples/mcp_runtime_workflow.yaml",
+        "--input-file",
+        "examples/mcp_runtime_input.json",
+        state_dir=tmp_path,
+    )
+    assert run.returncode == 0
+    run_payload = json.loads(run.stdout)
+    run_id = run_payload["run"]["run_id"]
+    assert run_payload["run"]["status"] == "completed"
+    output = run_payload["run"]["outputs"]["mcp_echo"]
+    assert output["tool_invocation"]["adapter"] == "mcp"
+    assert output["tool_invocation"]["reserved"] is False
+    assert output["mcp"]["status"] == "completed"
+
+    report = run_cli("report", run_id, state_dir=tmp_path)
+    assert report.returncode == 0
+    report_payload = json.loads(report.stdout)
+    [node] = report_payload["report"]["timeline"]
+    assert node["tool"]["adapter"] == "mcp"
+    assert node["tool"]["reserved"] is False
+    assert node["tool"]["mcp"]["status"] == "completed"
+
+    verify = run_cli("verify", run_id, state_dir=tmp_path)
+    assert verify.returncode == 0
+    assert json.loads(verify.stdout)["verification"]["status"] == "passed"
+
+    bundle = run_cli("export-bundle", run_id, "--output-dir", str(tmp_path / "bundles"), state_dir=tmp_path)
+    assert bundle.returncode == 0
+    bundle_path = Path(json.loads(bundle.stdout)["bundle"]["path"])
+    with zipfile.ZipFile(bundle_path) as archive:
+        report_doc = json.loads(archive.read("report.json"))
+        events = json.loads(archive.read("events.json"))
+    assert report_doc["timeline"][0]["tool"]["mcp"]["status"] == "completed"
+    assert events[0]["output"]["tool_invocation"]["reserved"] is False
+
+
 def test_cli_verify_reports_workflow_source_drift(tmp_path):
     workflow_path = tmp_path / "cli_drift_workflow.yaml"
     input_path = tmp_path / "input.json"

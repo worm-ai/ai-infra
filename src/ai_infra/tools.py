@@ -87,7 +87,7 @@ class ToolRegistry:
             elif invocation.adapter == "http":
                 raw_output = self._execute_http(invocation)
             elif invocation.adapter == "mcp":
-                raise ToolFailure({"error": "mcp adapter is reserved and not implemented"})
+                raw_output = self._execute_mcp(invocation)
             else:
                 raise RuntimeError(f"unsupported tool adapter {invocation.adapter!r}")
             status = "completed"
@@ -175,6 +175,55 @@ class ToolRegistry:
         except urllib.error.HTTPError as exc:
             raise RuntimeError(f"http tool returned status {exc.code}") from exc
 
+    def _execute_mcp(self, invocation: ToolInvocation) -> dict[str, Any]:
+        if invocation.reserved:
+            raise ToolFailure({"error": "mcp adapter is reserved and not implemented"})
+        runtime = str(invocation.input.get("runtime", ""))
+        server = str(invocation.input.get("server", ""))
+        tool_name = str(invocation.input.get("tool", ""))
+        args = invocation.input.get("args", {})
+        if not isinstance(args, dict):
+            raise RuntimeError("mcp tool args must be a mapping")
+        timeout_seconds = int(invocation.input.get("timeout_seconds", 30))
+        mcp_base = _mcp_summary(
+            runtime=runtime,
+            server=server,
+            tool_name=tool_name,
+            status="running",
+            args=args,
+            timeout_seconds=timeout_seconds,
+        )
+        if runtime != "local":
+            message = f"unsupported mcp runtime {runtime!r}"
+            raise ToolFailure(_mcp_failure_output(mcp_base, message, "unsupported_runtime", retryable=False))
+        if server != "local-memory":
+            message = f"unknown mcp server {server!r}"
+            raise ToolFailure(_mcp_failure_output(mcp_base, message, "server_error", retryable=False))
+        if tool_name == "echo":
+            result = dict(args)
+            mcp = dict(mcp_base)
+            mcp["status"] = "completed"
+            mcp["response"] = _mcp_response_summary(result)
+            return {
+                "server": server,
+                "tool": tool_name,
+                "runtime": runtime,
+                "result": result,
+                "mcp": mcp,
+            }
+        if tool_name == "fail":
+            message_arg = args.get("message", "mcp tool failed")
+            message = f"mcp tool {server}.{tool_name} failed: {message_arg}"
+            raise ToolFailure(_mcp_failure_output(mcp_base, message, "tool_error", retryable=False))
+        if tool_name == "timeout":
+            message = f"mcp tool {server}.{tool_name} timed out after {timeout_seconds}s"
+            raise ToolFailure(_mcp_failure_output(mcp_base, message, "timeout", retryable=True))
+        if tool_name == "malformed":
+            message = f"mcp tool {server}.{tool_name} returned malformed response"
+            raise ToolFailure(_mcp_failure_output(mcp_base, message, "malformed_response", retryable=False))
+        message = f"unknown mcp tool {server}.{tool_name}"
+        raise ToolFailure(_mcp_failure_output(mcp_base, message, "tool_not_found", retryable=False))
+
     def _flaky_once_tool(self, args: dict[str, Any]) -> Any:
         key = json.dumps(args, ensure_ascii=False, sort_keys=True)
         attempt = self._flaky_attempts.get(key, 0) + 1
@@ -238,11 +287,17 @@ def build_tool_invocation(config: dict[str, Any], context: dict[str, Any]) -> To
         args = _render_value(config.get("args", {}), context)
         if not isinstance(args, dict):
             raise RuntimeError("mcp tool args must be a mapping")
+        tool_input: dict[str, Any] = {"server": server, "tool": tool_name, "args": args}
+        runtime = config.get("runtime")
+        if runtime is not None:
+            tool_input = {"runtime": str(runtime), **tool_input}
+        if "timeout_seconds" in config:
+            tool_input["timeout_seconds"] = int(config["timeout_seconds"])
         return ToolInvocation(
             adapter=adapter,
             identity=f"{server}.{tool_name}",
-            input={"server": server, "tool": tool_name, "args": args},
-            reserved=True,
+            input=tool_input,
+            reserved=runtime is None,
         )
     return ToolInvocation(adapter=adapter, identity=adapter, input=dict(config))
 
@@ -254,7 +309,80 @@ def _invocation_output(invocation: ToolInvocation, output: dict[str, Any]) -> An
         return {key: output[key] for key in ("exit_code", "stdout", "stderr") if key in output} or None
     if invocation.adapter == "http":
         return {key: output[key] for key in ("status_code", "body") if key in output} or None
+    if invocation.adapter == "mcp" and not invocation.reserved:
+        payload: dict[str, Any] = {}
+        if "result" in output:
+            payload["result"] = output["result"]
+        if isinstance(output.get("mcp"), dict):
+            payload["mcp"] = output["mcp"]
+        return payload or None
     return None
+
+
+def _mcp_summary(
+    *,
+    runtime: str,
+    server: str,
+    tool_name: str,
+    status: str,
+    args: dict[str, Any],
+    timeout_seconds: int,
+) -> dict[str, Any]:
+    return {
+        "runtime": runtime,
+        "server": server,
+        "tool": tool_name,
+        "status": status,
+        "request": {
+            "args_keys": sorted(str(key) for key in args),
+            "timeout_seconds": timeout_seconds,
+        },
+    }
+
+
+def _mcp_response_summary(result: Any) -> dict[str, Any]:
+    if isinstance(result, dict):
+        return {"result_type": "object", "result_keys": sorted(str(key) for key in result)}
+    if isinstance(result, list):
+        return {"result_type": "array", "items": len(result)}
+    return {"result_type": _type_name(result)}
+
+
+def _mcp_failure_output(
+    mcp: dict[str, Any],
+    message: str,
+    status: str,
+    *,
+    retryable: bool,
+) -> dict[str, Any]:
+    evidence = dict(mcp)
+    evidence["status"] = status
+    evidence["error"] = {"type": status, "message": message, "retryable": retryable}
+    return {
+        "server": evidence.get("server"),
+        "tool": evidence.get("tool"),
+        "runtime": evidence.get("runtime"),
+        "error": message,
+        "mcp": evidence,
+    }
+
+
+def _type_name(value: Any) -> str:
+    if isinstance(value, dict):
+        return "object"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, int):
+        return "integer"
+    if isinstance(value, float):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    if value is None:
+        return "null"
+    return type(value).__name__
 
 
 def _render_value(value: Any, context: dict[str, Any]) -> Any:

@@ -1,0 +1,39 @@
+id: mcp-runtime-workflow
+name: MCP Runtime Workflow
+version: "0.17"
+entrypoint: mcp_echo
+nodes:
+  mcp_echo:
+    type: tool
+    tool:
+      adapter: mcp
+      runtime: local
+      server: local-memory
+      tool: echo
+      timeout_seconds: 3
+      args:
+        topic: "{topic}"
+validations:
+  - type: run_status
+    equals: completed
+  - type: node_completed
+    node: mcp_echo
+  - type: assertion
+    source: tool_invocation
+    node: mcp_echo
+    path: adapter
+    equals: mcp
+  - type: assertion
+    source: tool_invocation
+    node: mcp_echo
+    path: reserved
+    equals: false
+  - type: assertion
+    source: node_output
+    node: mcp_echo
+    path: mcp.status
+    equals: completed
+  - type: assertion
+    source: report
+    path: timeline.0.tool.mcp.status
+    equals: completed

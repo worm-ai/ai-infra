@@ -333,6 +333,47 @@ validations:
     }
 
 
+def test_load_workflow_accepts_local_mcp_runtime_tool_contract(tmp_path):
+    path = write_workflow(
+        tmp_path,
+        """
+id: mcp-runtime-contract
+entrypoint: mcp_tool
+nodes:
+  mcp_tool:
+    type: tool
+    tool:
+      adapter: mcp
+      runtime: local
+      server: local-memory
+      tool: echo
+      timeout_seconds: 3
+      args:
+        topic: "{topic}"
+validations:
+  - type: run_status
+    equals: completed
+  - type: assertion
+    source: node_output
+    node: mcp_tool
+    path: mcp.status
+    equals: completed
+""",
+    )
+
+    workflow = load_workflow(path)
+    validate_workflow(workflow)
+
+    assert workflow.node_map["mcp_tool"].config["tool"] == {
+        "adapter": "mcp",
+        "runtime": "local",
+        "server": "local-memory",
+        "tool": "echo",
+        "timeout_seconds": 3,
+        "args": {"topic": "{topic}"},
+    }
+
+
 def test_load_workflow_accepts_validation_assertion_contract(tmp_path):
     path = write_workflow(
         tmp_path,
@@ -742,6 +783,35 @@ tool: echo
 transport: stdio
 """,
             "mcp tool node 'tool_node' has unsupported field 'transport'",
+        ),
+        (
+            """
+adapter: mcp
+runtime: stdio
+server: local-memory
+tool: echo
+""",
+            "mcp tool node 'tool_node' runtime must be 'local'",
+        ),
+        (
+            """
+adapter: mcp
+runtime: local
+server: local-memory
+tool: echo
+timeout_seconds: 0
+""",
+            "mcp tool node 'tool_node' timeout_seconds must be a positive integer",
+        ),
+        (
+            """
+adapter: mcp
+runtime: local
+server: local-memory
+tool: echo
+timeout_seconds: true
+""",
+            "mcp tool node 'tool_node' timeout_seconds must be a positive integer",
         ),
     ],
 )

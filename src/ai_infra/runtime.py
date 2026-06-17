@@ -360,6 +360,10 @@ def _configured_run_output_values(outputs: dict[str, Any], governance: dict[str,
         _add_scalar_path_value(values, outputs, path)
     for node_id, path in _node_scoped_paths(governance, "node_output"):
         _add_scalar_path_value(values, outputs.get(node_id), path)
+    for node_id, path in _node_scoped_paths(governance, "tool_invocation"):
+        node_output = outputs.get(node_id)
+        if isinstance(node_output, dict) and isinstance(node_output.get("tool_invocation"), dict):
+            _add_scalar_path_value(values, node_output["tool_invocation"], path)
     return values
 
 
